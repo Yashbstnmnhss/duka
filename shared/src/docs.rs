@@ -54,9 +54,10 @@ macro_rules! doc {
 }
 
 doc! {
+    for const: "const", "## Type Context\n\n- Used with generic\n\n- Used in kinds";
     for provide: "provide(...)", "## Type Context\n\n Provide constraints for **parameters** in current type function";
     for ensure: "ensure", "## Type Context\n\n Mark a function with type guard\n```lua\nfunction not_nil<T>(t: T): ensure NonNil(T)\n```";
-    for type: "type", "## Type Context\n\n Used to\n- Define type alias\n- Define type function\n- Turn an expression into its type";
+    for type: "type", "## Type Context\n\n Used to\n- Define type alias\n- Define type function\n- Turn an expression into its type\n- Used in kinds";
     for if: "if", "Evaluate a block if a condition holds";
     for else: "else", "What expression to evaluate when an `if` condition evaluates to `false`";
     for elseif: "elseif", "What expression to evaluate when an `if` or `elseif` condition evaluates to `false` and current condition evaluates to `true`";
@@ -195,7 +196,7 @@ impl MetaInfo {
     /// reading is handed in.
     pub fn get_type_with(&self, resolve: &dyn Fn(&str, &[Type]) -> Option<Type>) -> Type {
         let declared = match &self.info {
-            MetaItemInfo::TypeFunction { .. } => Type::Any,
+            MetaItemInfo::Type { .. } => Type::Any,
             MetaItemInfo::Static { inner, .. } => inner.get_type_with(resolve),
             MetaItemInfo::Module { .. } => Type::Table(None, None, None),
             MetaItemInfo::UserData { .. } => Type::Table(None, None, None),
@@ -331,13 +332,10 @@ impl MetaInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaItemInfo {
-    TypeFunction {
+    Type {
         param_count: usize,
         // TODO
     },
-    // Type {
-    //     val: DocType,
-    // },
     Static {
         inner: &'static MetaInfo,
     },

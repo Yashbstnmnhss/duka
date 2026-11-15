@@ -1,4 +1,4 @@
-use duka_gc::{Finalize, Gc, GcCell, Heap, Trace, Tracer};
+use duka_gc::{Gc, GcCell, Heap, Trace, Tracer};
 use duka_macros::Info;
 use duka_shared::constants::{MetaMethod, ctype};
 //use duka_shared::dtype::Type;
@@ -181,21 +181,12 @@ impl RuntimeDukaArray {
         self.items.push(item);
     }
 }
-impl Finalize for RuntimeDukaArray {
-    fn finalize(&self) {}
-}
 
 impl Trace for RuntimeDukaArray {
     fn trace(&self, tracer: &mut Tracer) {
         for item in &self.items {
             item.trace(tracer);
         }
-    }
-}
-
-impl Finalize for RuntimeDukaTable {
-    fn finalize(&self) {
-        // ok
     }
 }
 
@@ -246,11 +237,6 @@ impl Trace for UserData {
         if let Some(t) = self.metatable {
             t.trace(tracer);
         }
-    }
-}
-impl Finalize for UserData {
-    fn finalize(&self) {
-        // We don't run finalizer here, because if so it is so complex
     }
 }
 
@@ -392,10 +378,6 @@ impl Debug for RustClosure {
     }
 }
 
-impl Finalize for RustClosure {
-    fn finalize(&self) {}
-}
-
 impl Trace for RustClosure {
     fn trace(&self, tracer: &mut Tracer) {
         for v in &self.captures {
@@ -455,10 +437,6 @@ pub fn make_values_iterator(heap: &mut Heap, entries: Vec<RuntimeValue>) -> Runt
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediumStringInner(pub u8, pub [u8; MID_STR_LEN]);
 
-impl Finalize for MediumStringInner {
-    fn finalize(&self) {}
-}
-
 impl Trace for MediumStringInner {
     fn trace(&self, _tracer: &mut Tracer) {}
 }
@@ -466,10 +444,6 @@ impl Trace for MediumStringInner {
 /// Wrapper for String, used to implement GC
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeapString(pub String);
-
-impl Finalize for HeapString {
-    fn finalize(&self) {}
-}
 
 impl Trace for HeapString {
     fn trace(&self, _tracer: &mut Tracer) {}
@@ -873,10 +847,6 @@ impl Trace for RuntimeValue {
     }
 }
 
-impl Finalize for DukaClosure {
-    fn finalize(&self) {}
-}
-
 impl Trace for DukaClosure {
     fn trace(&self, tracer: &mut Tracer) {
         tracer.mark(&self.func);
@@ -886,10 +856,6 @@ impl Trace for DukaClosure {
     }
 }
 
-impl Finalize for UpValue {
-    fn finalize(&self) {}
-}
-
 impl Trace for UpValue {
     fn trace(&self, tracer: &mut Tracer) {
         match self {
@@ -897,10 +863,6 @@ impl Trace for UpValue {
             UpValue::Closed(rv) => rv.trace(tracer),
         }
     }
-}
-
-impl Finalize for DukaProto {
-    fn finalize(&self) {}
 }
 
 impl Trace for DukaProto {

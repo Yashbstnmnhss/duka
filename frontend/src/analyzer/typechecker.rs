@@ -35,7 +35,7 @@ use crate::{
     parser::ast::{
         Attrs, Block, Destructuring, DukaChunk, Expr, Field, FuncBody, FunctionSig, If, IfClause,
         Match, MatchClause, Node, NodeKind, Param, ParamMode, Path, PathSuffix, ReturnAnnotation,
-        Stmt, TypeDesc, TypeParam, WhereClause,
+        Stmt, TypeDesc, TypeFnParam, TypeParam, WhereClause,
     },
 };
 use duka_shared::attributes::AttrReturns;
@@ -1508,20 +1508,25 @@ impl<'a> TypeCheckerCtx<'a> {
                 }
             }
             TypeDesc::Function(None) => {}
-            TypeDesc::FnLit(body) => {
+            TypeDesc::AnyType(_) | TypeDesc::ConstLit(None, _) => {}
+            TypeDesc::ShapeType(_, args, _) => {
+                for arg in args.iter() {
+                    self.check_type_names_with(arg, bound);
+                }
+            }
+            TypeDesc::ConstLit(Some(inner), _) => self.check_type_names_with(inner, bound),
+            TypeDesc::FnLit(params, body) => {
                 let outer = bound.len();
-                for param in body.0.iter() {
+                for param in params.iter() {
                     match param {
-                        Param::Typed((name, _), ty) => {
+                        TypeFnParam::Typed((name, _), ty) => {
                             self.check_type_names_with(ty, bound);
                             bound.push(name.clone().into_boxed_str());
                         }
-                        Param::Name((name, _))
-                        | Param::Pack((name, _), _)
-                        | Param::Var(_, Some((name, _))) => {
+                        TypeFnParam::Name((name, _)) | TypeFnParam::Var(_, Some((name, _))) => {
                             bound.push(name.clone().into_boxed_str())
                         }
-                        Param::Var(_, None) => {}
+                        TypeFnParam::Kinded(..) | TypeFnParam::Var(_, None) => {}
                     }
                 }
                 if let Some(ret) = &body.2 {
@@ -1745,7 +1750,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     .params()
                     .iter()
                     .map(|p| match p {
-                        Param::Typed(_, t) => t.to_string(),
+                        TypeFnParam::Typed((_, _), t) => t.to_string(),
                         _ => "any".to_owned(),
                     })
                     .collect::<Vec<_>>()
@@ -2142,11 +2147,26 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                 effects: ft.effects,
             }
         })),
-        TypeDesc::FnLit(body) => {
+        TypeDesc::AnyType(_) => tv.clone(),
+        TypeDesc::ShapeType(shape, args, span) => TypeDesc::ShapeType(
+            *shape,
+            args.iter()
+                .map(|t| normalize_generic_names(t, names))
+                .collect(),
+            *span,
+        ),
+        TypeDesc::ConstLit(bound, span) => TypeDesc::ConstLit(
+            bound
+                .as_deref()
+                .map(|b| Box::new(normalize_generic_names(b, names))),
+            *span,
+        ),
+        TypeDesc::FnLit(fparams, body) => {
             let mut cloned = body.as_ref().clone();
-            let FuncBody(params, _, ret, _, _) = &mut cloned;
-            for p in params.iter_mut() {
-                if let Param::Typed(_, t) = p {
+            let FuncBody(_, _, ret, _, _) = &mut cloned;
+            let mut fparams = fparams.clone();
+            for p in fparams.iter_mut() {
+                if let TypeFnParam::Typed(_, t) = p {
                     *t = normalize_generic_names(t, names);
                 }
             }
@@ -2155,7 +2175,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                     *t = normalize_generic_names(t, names);
                 }
             }
-            TypeDesc::FnLit(Box::new(cloned))
+            TypeDesc::FnLit(fparams.into(), Box::new(cloned))
         }
         TypeDesc::NonNil(inner) => {
             TypeDesc::NonNil(Box::new(normalize_generic_names(inner, names)))
@@ -2974,10 +2994,13 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         continue;
                     }
 
-                    if let Path::Base((name, sp)) = target
-                        && let Some(is_const) = self.is_const_symbol(name)
-                    {
-                        if is_const {
+                    if let Path::Base((name, sp)) = target {
+                        // A constant is refused before anything is written; for
+                        // any other name the write is checked against the type
+                        // the checker holds, which is the one scope-correct
+                        // answer -- the symbol table it was asked of resolves
+                        // from the outer scope and knows no parameter.
+                        if self.is_const_symbol(name) == Some(true) {
                             self.err(
                                 DukaSemanticError::AssignReadonlyValue(
                                     name.clone().into_boxed_str(),
@@ -3169,7 +3192,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     ));
                 }
             }
-            NodeKind::TypeFunction((_, span), body) => {
+            NodeKind::TypeFunction((_, span), params, _) => {
                 if !self.returns.collect_mode {
                     let id = self.env.viewer.table().symbol_at_span(*span).map(|s| s.id);
                     self.tables.backfills.push((
@@ -3177,7 +3200,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         *span,
                         format!(
                             "function({})",
-                            std::iter::repeat_n("type", body.0.len())
+                            std::iter::repeat_n("type", params.len())
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )
@@ -4048,7 +4071,7 @@ impl TypeCheckerCtx<'_> {
     }
 
     fn index_type(&mut self, recv: &Type, index: &Expr) -> Type {
-        if let Type::Rec(inner) = recv {
+        if let Some(inner) = recv.rec_inner() {
             let member = self.index_type(inner, index);
             return substitute_self(&member, recv);
         }
@@ -4194,7 +4217,7 @@ impl TypeCheckerCtx<'_> {
 
     /// `mt.__index`: the member a metatable lends a table or class that lacks it.
     fn mt_index_type(&mut self, mt: &Type, name: &str) -> Type {
-        if let Type::Rec(inner) = mt {
+        if let Some(inner) = mt.rec_inner() {
             return self.mt_index_type(inner, name);
         }
         let index = match mt {
@@ -5986,7 +6009,7 @@ impl TypeCheckerCtx<'_> {
             _ => false,
         };
         let table_receiver = !receiver_written
-            && matches!(recv, Type::Rec(..))
+            && recv.rec_inner().is_some()
             && ft.params.first().is_some_and(|p| p == &recv);
         let ft = if (!receiver_written && matches!(recv, Type::UserData { .. }) && !static_method)
             || table_receiver
@@ -6850,7 +6873,7 @@ fn resolve_against(c: &Constraint, solution: &solver::Solution) -> Constraint {
 }
 
 fn element_type_at(t: &Type, index: &ConstValue) -> Option<Type> {
-    if let Type::Rec(inner) = t {
+    if let Some(inner) = t.rec_inner() {
         return element_type_at(inner, index).map(|e| substitute_self(&e, t));
     }
     match (t.base(), index) {
@@ -9985,5 +10008,224 @@ return 0
 "#,
         );
         assert!(ok.is_empty(), "{ok:?}");
+    }
+
+    fn kind_errors(source: &str) -> Vec<DukaSpannedError> {
+        let lexer = LexerWithMacro::new(
+            Cursor::new(source),
+            SourceName::Virtual("test".into()),
+            Default::default(),
+        );
+        let chunk = Parser::parse(
+            lexer.tokenize().unwrap(),
+            duka_shared::config::DukaParserConfig::default(),
+        )
+        .unwrap();
+        let pipeline = crate::analyzer::ScopeAnalyzer
+            .chain(crate::analyzer::BasicAnalyzer)
+            .chain(crate::analyzer::TypeEval)
+            .chain(TypeChecker);
+        let (_data, errors) = pipeline.analyze(&chunk, Default::default());
+        errors.collect()
+    }
+
+    fn message_contains(errors: &[DukaSpannedError], needle: &str) -> bool {
+        errors.iter().any(|e| e.to_string().contains(needle))
+    }
+
+    #[test]
+    fn kind_type_param_accepts_every_type() {
+        let errors = kind_errors(
+            r#"
+type function Keep(t: type)
+    return t
+end
+local a: Keep(int) = 1
+local b: Keep(array<int>) = [2]
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_type_param_accepts_a_literal_for_its_base() {
+        let errors = kind_errors(
+            r#"
+type function OnlyInt(t: int)
+    return int
+end
+local x: OnlyInt(3) = 3
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_type_param_rejects_a_non_subset_argument() {
+        let errors = kind_errors(
+            r#"
+type function OnlyInt(t: int)
+    return int
+end
+local x: OnlyInt(string) = 1
+"#,
+        );
+        assert!(message_contains(&errors, "invalid kind"), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_const_param_accepts_a_literal() {
+        let errors = kind_errors(
+            r#"
+type function Value(t: const int)
+    return int
+end
+local x: Value(3) = 3
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_const_param_rejects_a_non_literal() {
+        let errors = kind_errors(
+            r#"
+type function Value(t: const int)
+    return int
+end
+local x: Value(int) = 3
+"#,
+        );
+        assert!(message_contains(&errors, "invalid kind"), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_shape_param_checks_the_argument() {
+        let errors = kind_errors(
+            r#"
+type function First(t: type array)
+    return t
+end
+local x: First(array<int>) = [7]
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_shape_param_rejects_a_different_shape() {
+        let errors = kind_errors(
+            r#"
+type function First(t: type array)
+    return t
+end
+local x: First(int) = 1
+"#,
+        );
+        assert!(
+            message_contains(&errors, "expected type array"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn kind_annotation_may_name_an_earlier_parameter() {
+        let errors = kind_errors(
+            r#"
+type function Keep(t: type, a: type array<t>)
+    return a
+end
+local x: Keep(int, array<int>) = [1]
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn kind_annotation_naming_an_earlier_parameter_is_checked() {
+        let errors = kind_errors(
+            r#"
+type function Keep(t: type, a: type array<t>)
+    return a
+end
+local x: Keep(int, array<string>) = [1]
+"#,
+        );
+        assert!(message_contains(&errors, "invalid kind"), "{errors:?}");
+    }
+
+    #[test]
+    fn undecided_argument_passes_a_kind_check() {
+        let errors = kind_errors(
+            r#"
+type function Second(t: type array)
+    return t
+end
+type function Wrap(t)
+    return Second(t)
+end
+local x: Wrap(any) = [1]
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn return_kind_must_hold() {
+        let errors = kind_errors(
+            r#"
+type function AsArray(t: type): type array
+    return t
+end
+local x: AsArray(int) = 1
+"#,
+        );
+        assert!(
+            message_contains(&errors, "return kind mismatch"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn return_type_accepts_any_result() {
+        let errors = kind_errors(
+            r#"
+type function Same(t: type): type
+    return t
+end
+local a: Same(int) = 1
+local b: Same(string) = "s"
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn return_const_kind_requires_a_literal_result() {
+        let errors = kind_errors(
+            r#"
+type function Lit(t: type): const int
+    return t
+end
+local x: Lit(int) = 1
+"#,
+        );
+        assert!(
+            message_contains(&errors, "return kind mismatch"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn plain_return_annotation_is_not_enforced() {
+        let errors = kind_errors(
+            r#"
+type function Whatever(t: type): int
+    return t
+end
+local x: Whatever(string) = "s"
+"#,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
     }
 }

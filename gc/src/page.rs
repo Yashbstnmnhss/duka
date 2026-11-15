@@ -43,7 +43,7 @@ impl BitMap {
     pub fn new(capacity: usize) -> Self {
         let words = capacity.div_ceil(usize::BITS as usize);
         Self {
-            inner: vec![0, words],
+            inner: vec![0; words],
             count: 0,
             capacity,
         }
@@ -78,7 +78,7 @@ impl BitMap {
                 self.inner[idx] |= mask;
                 self.count += 1;
             } else {
-                self.inner[idx] &= mask;
+                self.inner[idx] &= !mask;
                 self.count -= 1;
             }
         }

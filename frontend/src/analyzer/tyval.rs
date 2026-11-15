@@ -1,10 +1,10 @@
 use std::{collections::HashMap, fmt::Display};
 
-use duka_shared::dtype::{Constraint, Ty, Type};
+use duka_shared::dtype::{Constraint, Kind, KindShape, NoExt, Ty, Type};
 
 use crate::{
     analyzer::builtin::TypeFunctionBuiltin,
-    parser::ast::{FuncBody, Param, ReturnAnnotation, TypeDesc},
+    parser::ast::{FuncBody, ReturnAnnotation, TypeDesc, TypeFnParam},
 };
 
 /// What the type context adds past the value context: the evaluator's
@@ -104,6 +104,209 @@ pub fn to_type_lossy(value: &TypeContext) -> Type {
     }
 }
 
+pub fn kind_undecided(value: &TypeValue) -> bool {
+    let value = untag(value);
+    if let Some(ty) = value.as_type() {
+        return matches!(
+            ty,
+            Ty::Any | Ty::Unknown | Ty::Param(_) | Ty::Var(_) | Ty::TypeFn { .. }
+        );
+    }
+    matches!(
+        value,
+        Ty::Param(_)
+            | Ty::Var(_)
+            | Ty::TypeFn { .. }
+            | Ty::Unknown
+            | Ty::Any
+            | Ty::Ext(TypeLeaf::Constraints(_))
+    )
+}
+
+fn explode(ty: &Type) -> TypeValue {
+    match ty {
+        Ty::Union(ts) => Ty::Union(ts.iter().map(explode).collect()),
+        Ty::TypeTuple(items, rest) => Ty::TypeTuple(
+            items.iter().map(explode).collect(),
+            rest.as_deref().map(|x| Box::new(explode(x))),
+        ),
+        Ty::Array(inner) => Ty::Array(inner.as_deref().map(|x| Box::new(explode(x)))),
+        Ty::Table(k, v, mt) => Ty::Table(
+            k.as_deref().map(|x| Box::new(explode(x))),
+            v.as_deref().map(|x| Box::new(explode(x))),
+            mt.as_deref().map(|x| Box::new(explode(x))),
+        ),
+        Ty::TypeTable(items, mt) => Ty::TypeTable(
+            items
+                .iter()
+                .map(|(k, v)| (k.clone(), Box::new(explode(v))))
+                .collect(),
+            mt.as_deref().map(|x| Box::new(explode(x))),
+        ),
+        Ty::Rec(inner) => Ty::Rec(Box::new(explode(inner))),
+        Ty::Object {
+            id,
+            name,
+            base,
+            args,
+            module,
+            mt,
+        } => Ty::Object {
+            id: *id,
+            name: name.clone(),
+            base: *base,
+            args: args.iter().map(explode).collect(),
+            module: module.clone(),
+            mt: mt.as_deref().map(|x| Box::new(explode(x))),
+        },
+        Ty::Brand(b) => Ty::Brand(b.clone()),
+        Ty::Pattern(p) => Ty::Pattern(p.clone()),
+        other => Ty::Ext(TypeLeaf::Final(other.clone())),
+    }
+}
+
+pub fn kind_accepts(kind: &Kind<NoExt>, value: &TypeValue) -> Result<(), String> {
+    let expanded;
+    let value = match untag(value) {
+        Ty::Ext(TypeLeaf::Final(ty)) => {
+            expanded = explode(ty);
+            &expanded
+        }
+        other => other,
+    };
+    if kind_undecided(value) {
+        return Ok(());
+    }
+    let ty = value;
+    match kind {
+        Kind::AnyType => Ok(()),
+        Kind::OfType(bound) => {
+            if matches!(ty, Ty::Ext(TypeLeaf::Closure(_))) {
+                return Err(format!("expected {bound}, got a type function"));
+            }
+            let arg = value.to_type();
+            if bound.accepts(&arg) {
+                Ok(())
+            } else {
+                Err(format!("expected {bound}, got {arg}"))
+            }
+        }
+        Kind::LiteralType(bound) => match value.to_type() {
+            Ty::Literal(lit) => {
+                let arg = Ty::Literal(lit);
+                if bound.accepts(&arg) {
+                    Ok(())
+                } else {
+                    Err(format!("expected a literal of {bound}, got {arg}"))
+                }
+            }
+            other => Err(format!("expected a literal type, got {other}")),
+        },
+        Kind::Shape(shape, args) => shape_accepts(*shape, args, value),
+        Kind::TypeFn(_) => match ty {
+            Ty::Ext(TypeLeaf::Closure(_)) => Ok(()),
+            other => Err(format!("expected a type function, got {other}")),
+        },
+        Kind::Either(members) => {
+            for member in members.iter() {
+                if kind_accepts(member, value).is_ok() {
+                    return Ok(());
+                }
+            }
+            Err(format!("expected {kind}, got {}", value.to_type()))
+        }
+    }
+}
+
+fn shape_accepts(shape: KindShape, args: &[Kind<NoExt>], value: &TypeValue) -> Result<(), String> {
+    let slot = |kind: &Kind<NoExt>, inner: &TypeContext| kind_accepts(kind, inner);
+    let reject = |got: &Type| {
+        Err(format!(
+            "expected {}, got {got}",
+            Kind::<NoExt>::Shape(shape, [].into())
+        ))
+    };
+    let ty = untag(value);
+    match (shape, ty) {
+        (KindShape::Object, Ty::Object { args: slots, .. }) => {
+            if args.is_empty() {
+                return Ok(());
+            }
+            if args.len() != slots.len() {
+                return Err(format!(
+                    "expected type object with {} type arguments, got {}",
+                    args.len(),
+                    slots.len()
+                ));
+            }
+            for (kind, inner) in args.iter().zip(slots.iter()) {
+                slot(kind, inner)?;
+            }
+            Ok(())
+        }
+        (KindShape::Array, Ty::Array(inner)) => {
+            if args.len() > 1 {
+                return Err("expected at most one kind argument for type array".to_owned());
+            }
+            match (args.first(), inner.as_deref()) {
+                (Some(kind), Some(inner)) => slot(kind, inner),
+                (Some(_), None) | (None, _) => Ok(()),
+            }
+        }
+        (KindShape::Table, Ty::Table(k, v, _)) => {
+            if args.len() > 2 {
+                return Err("expected at most two kind arguments for type table".to_owned());
+            }
+            if let Some(kind) = args.first()
+                && let Some(k) = k.as_deref()
+            {
+                slot(kind, k)?;
+            }
+            if let Some(kind) = args.get(1)
+                && let Some(v) = v.as_deref()
+            {
+                slot(kind, v)?;
+            }
+            Ok(())
+        }
+        (KindShape::Record, Ty::TypeTable(..)) => {
+            if args.is_empty() {
+                Ok(())
+            } else {
+                Err("expected no kind arguments for type record".to_owned())
+            }
+        }
+        (KindShape::Tuple, Ty::TypeTuple(items, _)) => {
+            if args.len() > items.len() {
+                return Err(format!(
+                    "expected type tuple with at most {} members, got {} kinds",
+                    items.len(),
+                    args.len()
+                ));
+            }
+            for (kind, inner) in args.iter().zip(items.iter()) {
+                slot(kind, inner)?;
+            }
+            Ok(())
+        }
+        (KindShape::Union, Ty::Union(_)) => {
+            if args.is_empty() {
+                Ok(())
+            } else {
+                Err("expected no kind arguments for type union".to_owned())
+            }
+        }
+        (KindShape::Pattern, Ty::Pattern(..)) => {
+            if args.is_empty() {
+                Ok(())
+            } else {
+                Err("expected no kind arguments for type pattern".to_owned())
+            }
+        }
+        (_, other) => reject(&other.to_type()),
+    }
+}
+
 pub fn collapse(value: &TypeContext, closures: &mut Vec<TypeClosure>) -> Type {
     let mut leaf = |value: &TypeLeaf| match value {
         TypeLeaf::Final(ty) => ty.clone(),
@@ -182,11 +385,13 @@ pub fn collapse(value: &TypeContext, closures: &mut Vec<TypeClosure>) -> Type {
     }
 }
 
+#[inline]
 /// Embeds a final type into the type context unchanged.
 pub fn lift(value: &Type) -> TypeContext {
     Ty::Ext(TypeLeaf::Final(value.clone()))
 }
 
+#[inline]
 /// Embeds one evaluator value into the type context.
 pub fn lift_value(value: &TypeValue) -> TypeContext {
     value.clone()
@@ -197,7 +402,7 @@ mod tests {
     use super::*;
     use duka_shared::value::ConstValue;
 
-    fn unit_mul(_: Box<[TypeValue]>) -> crate::analyzer::builtin::TypeResult {
+    fn unit_mul(_: Box<[TypeValue]>) -> crate::analyzer::builtin::arg::TypeResult {
         Err("test stub".to_owned())
     }
 
@@ -340,13 +545,13 @@ impl TypeValueExt for TypeValue {
 pub enum TypeClosure {
     Duka {
         name: Box<str>,
-        params: Box<[Param]>,
+        params: Box<[TypeFnParam]>,
         body: Box<FuncBody>,
         captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
     },
     Inline {
         name: Box<str>,
-        params: Box<[Param]>,
+        params: Box<[TypeFnParam]>,
         ret: Box<TypeDesc>,
     },
     Rust {
@@ -391,7 +596,7 @@ impl PartialEq for TypeClosure {
 impl TypeClosure {
     pub fn duka(
         name: &str,
-        params: Box<[Param]>,
+        params: Box<[TypeFnParam]>,
         body: Box<FuncBody>,
         captured: Vec<HashMap<Box<str>, (TypeValue, bool)>>,
     ) -> Self {
@@ -403,7 +608,7 @@ impl TypeClosure {
         }
     }
 
-    pub fn inline(name: &str, params: Box<[Param]>, ret: &TypeDesc) -> Self {
+    pub fn inline(name: &str, params: Box<[TypeFnParam]>, ret: &TypeDesc) -> Self {
         TypeClosure::Inline {
             name: name.into(),
             params,
@@ -426,7 +631,7 @@ impl TypeClosure {
         }
     }
 
-    pub fn params(&self) -> &[Param] {
+    pub fn params(&self) -> &[TypeFnParam] {
         match self {
             TypeClosure::Duka { params, .. } | TypeClosure::Inline { params, .. } => params,
             TypeClosure::Rust { .. } => &[],

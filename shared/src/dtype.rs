@@ -113,6 +113,89 @@ pub enum Ty<L> {
     /* Laiceps */
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum Kind<L> {
+    OfType(Ty<L>),
+    LiteralType(Ty<L>),
+    Shape(KindShape, Box<[Kind<L>]>),
+    TypeFn(Option<Box<Ty<L>>>),
+    Either(Box<[Kind<L>]>),
+    #[default]
+    AnyType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum KindShape {
+    Object,
+    Array,
+    Table,
+    Record,
+    Tuple,
+    Union,
+    Pattern,
+}
+
+impl KindShape {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "object" => KindShape::Object,
+            "array" | "list" => KindShape::Array,
+            "table" => KindShape::Table,
+            "record" => KindShape::Record,
+            "tuple" => KindShape::Tuple,
+            "union" => KindShape::Union,
+            "pattern" => KindShape::Pattern,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            KindShape::Object => "object",
+            KindShape::Array => "array",
+            KindShape::Table => "table",
+            KindShape::Record => "record",
+            KindShape::Tuple => "tuple",
+            KindShape::Union => "union",
+            KindShape::Pattern => "pattern",
+        }
+    }
+}
+
+impl<L: Display + PartialEq> Display for Kind<L> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Kind::AnyType => write!(f, "type"),
+            Kind::OfType(ty) => write!(f, "{ty}"),
+            Kind::LiteralType(bound) => {
+                if matches!(bound, Ty::Any | Ty::Unknown) {
+                    write!(f, "const")
+                } else {
+                    write!(f, "const {bound}")
+                }
+            }
+            Kind::Shape(shape, args) if args.is_empty() => write!(f, "type {}", shape.name()),
+            Kind::Shape(shape, args) => {
+                let args = args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "type {}<{args}>", shape.name())
+            }
+            Kind::TypeFn(_) => write!(f, "type fn"),
+            Kind::Either(members) => {
+                let members = members
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                write!(f, "{members}")
+            }
+        }
+    }
+}
+
 /// The value context has nothing past the final forms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NoExt {}
@@ -1084,6 +1167,18 @@ impl Type {
     #[inline(always)]
     pub fn is_branded(&self) -> bool {
         matches!(self, Type::Brand(_))
+    }
+
+    /// The type a `rec` alias wraps, if this is one.
+    ///
+    /// A recursive type is read through this rather than by matching the
+    /// variant where all the caller wants is what it stands for.
+    #[inline]
+    pub fn rec_inner(&self) -> Option<&Type> {
+        match self {
+            Type::Rec(inner) => Some(inner),
+            _ => None,
+        }
     }
     #[inline]
     pub fn brand(&self) -> Option<&Brand> {

@@ -24,7 +24,7 @@ use crate::{
         ast::{
             Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, Node,
             NodeKind, ObjectDef, ObjectProperty, Param, Path, PathSuffix, Pattern, PatternTerm,
-            Stmt, TypeDesc,
+            Stmt, TypeDesc, TypeFnParam,
         },
     },
 };
@@ -431,7 +431,14 @@ impl Visitor for RefWalker<'_> {
 fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
     match &stmt.0 {
         NodeKind::TypeAlias(_, ty) => walk_type_value(ty, out),
-        NodeKind::TypeFunction(_, body) => walk_func_body(body, out),
+        NodeKind::TypeFunction(_, params, body) => {
+            for p in params.iter() {
+                if let TypeFnParam::Typed(_, ty) = p {
+                    walk_type_value(ty, out);
+                }
+            }
+            walk_func_body(body, out)
+        }
         NodeKind::Object(obj) => walk_object(obj, out),
         NodeKind::Define(attrs, exprs, _, _) => {
             for attr in attrs.iter() {
@@ -759,6 +766,17 @@ fn walk_type_value(tv: &TypeDesc, out: &mut Vec<(String, Span)>) {
         | TypeDesc::Nilable(_)
         | TypeDesc::Named(..)
         | TypeDesc::Rec(_) => {}
+        TypeDesc::AnyType(_) => {}
+        TypeDesc::ShapeType(_, args, _) => {
+            for a in args.iter() {
+                walk_type_value(a, out);
+            }
+        }
+        TypeDesc::ConstLit(inner, _) => {
+            if let Some(inner) = inner {
+                walk_type_value(inner, out);
+            }
+        }
     }
 }
 
@@ -801,7 +819,7 @@ fn collect_exports_stmt(
                 );
             }
         }
-        NodeKind::TypeFunction((name, _), _) => {
+        NodeKind::TypeFunction((name, _), _, _) => {
             if let Some(sym) = viewer.lookup_anywhere(&name.0.0)
                 && let SymbolType::TypeFunction(id) = sym.symbol_type
             {

@@ -18,7 +18,7 @@ use crate::{
     },
 };
 use duka_gc::prelude::*;
-use duka_gc::{Finalize, Trace, Tracer};
+use duka_gc::{Trace, Tracer};
 use duka_shared::{
     constants::{MetaMethod, csugar, ctype},
     types::ValueCount,
@@ -268,7 +268,8 @@ impl Scheduler {
                 self.start_time,
                 Some(self.vm_globals.clone()),
             );
-            let action = match self.current_mut().inner.execute(heap, &mut api, None) {
+            let executed = self.current_mut().inner.execute(heap, &mut api, None);
+            let action = match executed {
                 Ok(a) => a,
                 Err(kind) => {
                     if self.is_main() {
@@ -474,9 +475,6 @@ impl VMContext {
     }
 }
 
-impl Finalize for VMContext {
-    fn finalize(&self) {}
-}
 impl Trace for VMContext {
     fn trace(&self, tracer: &mut Tracer) {
         self.globals.trace(tracer);
@@ -691,10 +689,6 @@ impl VM {
             value.into(),
         );
     }
-}
-
-impl Finalize for Scheduler {
-    fn finalize(&self) {}
 }
 
 impl Trace for Scheduler {

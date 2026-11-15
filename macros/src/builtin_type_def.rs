@@ -429,7 +429,7 @@ impl BuiltinTypeDef {
                     name: #name_lit,
                     doc: #doc_lit,
                     example: #ex,
-                    info: ::duka_shared::docs::MetaItemInfo::TypeFunction {
+                    info: ::duka_shared::docs::MetaItemInfo::Type {
                         param_count: #count
                     },
                     flags: #flags,

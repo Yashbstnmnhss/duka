@@ -1,12 +1,13 @@
 //! Commandline Tool for Duka
 //!
 //!
-use crate::docgen::gen_doc;
+use crate::docgen::gen_doc_cmd;
 use crate::pipeline::{
     AdapterNode, AnalyzerNode, BangExpanderNode, ChunkToBytes, CodegenNode, DukaSpannedDiagnoses,
-    EvidenceSlot, FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens, IRToBytes,
-    LexerNode, MacroLexerNode, OptimizerNode, ParserNode, ProtoToBytes, ResultsToBytes, RunNode,
-    StringToBytes, TokensToBytes, TypeCheckerNode, WriterNode, to_spanned,
+    EvidenceSlot, FileNode, FileToChunk, FileToIR, FileToProto, FileToRaw, FileToTokens,
+    GlobalsSlot, IRToBytes, IrNode, LexerNode, MacroLexerNode, OptimizerNode, ParserNode,
+    ProtoToBytes, ResultsToBytes, RunNode, StringToBytes, TokensToBytes, TypeCheckerNode,
+    WriterNode, to_spanned,
 };
 use clap::{ArgAction, Parser as ClapParser, Subcommand, ValueEnum};
 use colored::Colorize;
@@ -477,6 +478,7 @@ fn do_cmd(cmd: Commands) -> Result<()> {
             let bangs = BangExpanderRegistry::new().names();
             let (adapter_node, adapted_slot) = AdapterNode::new(Adapter);
             let evidence_slot = EvidenceSlot::default();
+            let globals_slot = GlobalsSlot::default();
 
             let mut pipeline = Pipeline::new()
                 .node(Box::new(FileNode))
@@ -520,13 +522,15 @@ fn do_cmd(cmd: Commands) -> Result<()> {
                     },
                     adapted_slot,
                     evidence_slot.clone(),
+                    globals_slot.clone(),
                 )))
                 .node(Box::new(adapter_node))
-                .node(Box::new(CodegenNode::<IRGenerator, _, _>::new(
+                .node(Box::new(IrNode::new(
                     StepName::IRCompiler,
                     DukaIRConfig {
                         var_default_local: configs.var_default_local,
                     },
+                    globals_slot,
                 )))
                 .node(Box::new(CodegenNode::<DebugTranspiler, _, _>::new(
                     StepName::Transpiler,
@@ -617,9 +621,9 @@ fn do_cmd(cmd: Commands) -> Result<()> {
         }
         Commands::DocGen {
             output,
-            builtin: _,
-            from: _,
-        } => gen_doc(output)?,
+            builtin,
+            from,
+        } => gen_doc_cmd(output, from, builtin)?,
         _ => {
             let mut rl = Editor::<DukaHelper, FileHistory>::new().into_diagnostic()?;
             rl.set_color_mode(ColorMode::Enabled);

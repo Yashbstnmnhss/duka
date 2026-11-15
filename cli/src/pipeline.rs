@@ -10,6 +10,7 @@
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
+    collections::HashSet,
     error::Error,
     fs::File,
     io::{self, BufReader, Read, Write},
@@ -33,7 +34,9 @@ use duka_lib::{
 use duka_lib::{
     duka_frontend::analyzer::AdaptedData,
     duka_shared::{
-        config::{DukaAnalyzerConfig, DukaLexerConfig, DukaParserConfig, DukaParsingConfig},
+        config::{
+            DukaAnalyzerConfig, DukaIRConfig, DukaLexerConfig, DukaParserConfig, DukaParsingConfig,
+        },
         errors::{DukaDiagnose, DukaErrorKind, DukaSpannedError, Severity, Span},
         ir::DukaIR,
         types::{
@@ -45,6 +48,7 @@ use duka_lib::{
 };
 use duka_lib::{
     duka_frontend::{
+        ir::IRGenerator,
         lexer::{Lexer, LexerWithMacro, token::Token},
         parser::{Parser, ast::DukaChunk},
     },
@@ -458,6 +462,22 @@ impl EvidenceSlot {
     }
 }
 
+/// The names the analyzer declared as globals, parked for the IR step.
+///
+/// A bare assignment to one of them writes that global instead of shadowing
+/// it with a fresh local, which is a fact only the scope analysis knows.
+#[derive(Default, Clone)]
+pub struct GlobalsSlot(Rc<RefCell<Option<HashSet<Box<str>>>>>);
+
+impl GlobalsSlot {
+    fn put(&self, globals: HashSet<Box<str>>) {
+        *self.0.borrow_mut() = Some(globals);
+    }
+    fn take(&self) -> HashSet<Box<str>> {
+        self.0.borrow_mut().take().unwrap_or_default()
+    }
+}
+
 /// The type stage, and the only node holding a source provider: reading a
 /// dependency needs a lexer and parser config, and resolving a relative
 /// `RequireType` needs the provider. Mirrors `duka_lib::module::from_source`.
@@ -467,6 +487,7 @@ pub struct TypeCheckerNode {
     parser: DukaParserConfig,
     adapted: AdaptedSlot,
     evidence: EvidenceSlot,
+    globals: GlobalsSlot,
 }
 impl TypeCheckerNode {
     pub fn new(
@@ -475,6 +496,7 @@ impl TypeCheckerNode {
         parser: DukaParserConfig,
         adapted: AdaptedSlot,
         evidence: EvidenceSlot,
+        globals: GlobalsSlot,
     ) -> Self {
         Self {
             analyzer,
@@ -482,6 +504,7 @@ impl TypeCheckerNode {
             parser,
             adapted,
             evidence,
+            globals,
         }
     }
 }
@@ -518,6 +541,7 @@ impl Node<StepName> for TypeCheckerNode {
         // ever handed over as evidence.
         self.evidence
             .put(TypeEvidence::new(std::mem::take(&mut data.1.type_at_span)));
+        self.globals.put(data.1.symbols.global_names());
 
         // The three levels are drawn by three renderers that share one shape, so
         // a warning reads like an error with a different word on it rather than a
@@ -693,6 +717,44 @@ where
         let input = downcast::<G::InputType>(input)?;
         Ok(Box::new(
             G::generate(*input, self.1.clone()).into_diagnostic()?,
+        ))
+    }
+}
+
+/// The IR step, carrying the globals the type stage resolved.
+///
+/// `CodegenNode` hands a generator only its input, and the input is the chunk;
+/// a bare assignment needs to know which names the analyzer declared as
+/// globals, so this node reads them out of the slot the type stage filled.
+pub struct IrNode {
+    name: StepName,
+    config: DukaIRConfig,
+    globals: GlobalsSlot,
+}
+impl IrNode {
+    pub const fn new(name: StepName, config: DukaIRConfig, globals: GlobalsSlot) -> Self {
+        Self {
+            name,
+            config,
+            globals,
+        }
+    }
+}
+impl Node<StepName> for IrNode {
+    fn from(&self) -> TypeId {
+        TypeId::of::<DukaChunk>()
+    }
+    fn to(&self) -> TypeId {
+        TypeId::of::<DukaIR>()
+    }
+    fn name(&self) -> StepName {
+        self.name
+    }
+    fn process(&mut self, input: Box<dyn Any>) -> miette::Result<Box<dyn Any>> {
+        let chunk = downcast::<DukaChunk>(input)?;
+        Ok(Box::new(
+            IRGenerator::generate_with(*chunk, self.config.clone(), self.globals.take())
+                .into_diagnostic()?,
         ))
     }
 }

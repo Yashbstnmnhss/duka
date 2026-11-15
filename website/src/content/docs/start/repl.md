@@ -12,7 +12,7 @@ description: What duka-cli does.
 ```sh
 duka-cli
 duka-cli pipeline
-duka-cli doc-gen
+duka-cli doc-gen <out> --builtin --from
 ```
 
 The REPL keeps what you write across lines, so a bare `function f() end` comes

@@ -18,6 +18,15 @@ use crate::{
     parser::Parser,
 };
 
+use crate::lexer::token::TokenKind;
+use duka_shared::config::DukaAnalyzerConfig;
+use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::dtype::{Ty, Type};
+use duka_shared::utils::{SymbolTableViewer, SymbolType};
+use duka_shared::value::ConstValue;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 pub const TYPE_PRELUDE: &str = include_str!("./builtin/builtin.duka");
 struct TypePrelude {
     type_fns: Vec<crate::analyzer::TypeFn>,
@@ -62,15 +71,6 @@ fn type_prelude() -> &'static TypePrelude {
     &PRELUDE
 }
 
-use crate::lexer::token::TokenKind;
-use duka_shared::config::DukaAnalyzerConfig;
-use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
-use duka_shared::dtype::{Ty, Type};
-use duka_shared::utils::{SymbolTableViewer, SymbolType};
-use duka_shared::value::ConstValue;
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
 pub fn lexer_macros_prelude<Source: Read>(lexer: &mut LexerWithMacro<Source>) {
     for (i, cs) in COSTATUS.iter().enumerate() {
         lexer.predefine(
@@ -90,25 +90,12 @@ pub fn lexer_macros_prelude<Source: Read>(lexer: &mut LexerWithMacro<Source>) {
     }
 }
 
-/// The type-context builtins written in DUKA, described the way the editor
-/// describes a builtin.
-///
-/// `TYPE_PRELUDE` is a source file like any other, so what it declares is read by
-/// reading it -- the same parse that makes these work is what says what they are
-/// called and how many they take. Hand-listing them here would be a second list to
-/// keep in step with the file, and the step that gets forgotten is the one where a
-/// builtin is written and never offered.
-///
-/// There is no documentation to carry, because none is written. That is the whole
-/// of what is missing: a builtin completion cannot offer is a builtin that does not
-/// exist as far as a reader is concerned, and these worked long before they could
-/// be listed.
 pub fn type_prelude_meta() -> &'static MetaInfo {
     static META: LazyLock<MetaInfo> = LazyLock::new(|| {
         let prelude = type_prelude();
         let mut items: Vec<MetaInfo> = vec![];
         for tf in prelude.type_fns.iter() {
-            items.push(type_fn_meta(tf.name.clone().into_string(), tf.body.0.len()));
+            items.push(type_fn_meta(tf.name.clone().into_string(), tf.params.len()));
         }
         for f in prelude.inline_type_fns.iter() {
             items.push(type_fn_meta(f.name.clone().into_string(), f.params.len()));
@@ -126,20 +113,16 @@ pub fn type_prelude_meta() -> &'static MetaInfo {
     &META
 }
 
-/// A stable copy of one item, because the metadata outlives the parse it was read
-/// from. `MetaInfo::Module` holds a slice, so the items have to live as long as it.
 fn type_fn_meta(name: String, count: usize) -> MetaInfo {
     MetaInfo {
         name: Box::leak(name.into_boxed_str()),
         doc: "",
         example: None,
-        info: MetaItemInfo::TypeFunction { param_count: count },
+        info: MetaItemInfo::Type { param_count: count },
         flags: &[],
     }
 }
 
-/// Whether a builtin is on for this project: its `@feature` is enabled and its
-/// `@since` edition has been reached. A missing edition means the latest one.
 fn enabled(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
     if let Some(features) = meta.get_flag("feature")
         && let Some(on) = &cfg.features
@@ -156,13 +139,6 @@ fn enabled(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> bool {
     duka_shared::features::compare_versions(edition, since).is_none_or(|o| o.is_lt())
 }
 
-/// Declares what the runtime provides, so a name the program cannot declare
-/// still resolves: `print` is a function, `os` is a table of them.
-///
-/// Which builtins exist, and whether a module's members are global or sit
-/// behind its name, is whatever the runtime this build links against handed
-/// over. Nothing here names a builtin, so a runtime that adds one needs no
-/// change here, and one compiled without `os` simply does not have it.
 pub fn inject_builtins(
     analysis: &mut ScopeAnalysis,
     registrations: &[BuiltinInfo],
@@ -203,11 +179,6 @@ pub fn inject_builtins(
 
 /// What every builtin says about its own call, keyed by the name it is called
 /// by.
-///
-/// A builtin may write a `where` list and a set of constraints, and neither is
-/// a type, so neither travels in the signature. They are read from the
-/// metadata and kept here, and the call that has to discharge them reads them
-/// from here.
 fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRules> {
     let mut out = HashMap::new();
     for (_, meta) in registrations {
@@ -245,10 +216,6 @@ fn builtin_rules(registrations: &[BuiltinInfo]) -> HashMap<Box<str>, BuiltinRule
 
 /// The methods of every userdata the runtime offers, keyed by the name that
 /// tells one userdata from another.
-///
-/// A userdata is a payload the runtime owns, and the methods are how a program
-/// reaches it. The type says which payload it is -- a file is not a regular
-/// expression -- and the methods are what a call on it may reach.
 fn userdata_methods(
     registrations: &[BuiltinInfo],
 ) -> HashMap<Box<str>, Box<[(Box<str>, Type, bool)]>> {
@@ -318,7 +285,7 @@ fn inject_type_members(
 /// its members when it is a module of its own.
 fn type_builtin_value(meta: &MetaInfo, cfg: &DukaAnalyzerConfig) -> Option<TypeValue> {
     match &meta.info {
-        MetaItemInfo::TypeFunction { .. } | MetaItemInfo::Constant { .. } => {
+        MetaItemInfo::Type { .. } | MetaItemInfo::Constant { .. } => {
             crate::analyzer::builtin::builtin_value(meta.name)
         }
         MetaItemInfo::Module { inner } => {
@@ -370,7 +337,7 @@ fn member_field(analysis: &ScopeAnalysis, meta: &MetaInfo) -> Option<(ConstValue
             name: (*ty_name).into(),
         },
         MetaItemInfo::Static { inner, .. } => return member_field(analysis, inner),
-        MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return None,
+        MetaItemInfo::Module { .. } | MetaItemInfo::Type { .. } => return None,
     };
     Some((
         ConstValue::String(meta.name.as_bytes().to_vec().into_boxed_slice()),
@@ -471,7 +438,7 @@ fn declare_value(analysis: &mut ScopeAnalysis, meta: &MetaInfo) {
             )
         }
         MetaItemInfo::Static { inner } => return declare_value(analysis, inner),
-        MetaItemInfo::Module { .. } | MetaItemInfo::TypeFunction { .. } => return,
+        MetaItemInfo::Module { .. } | MetaItemInfo::Type { .. } => return,
     };
     declare(analysis, meta.name, kind, ty, meta.attributes());
 }

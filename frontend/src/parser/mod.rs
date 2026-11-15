@@ -4,12 +4,13 @@ use ast::{
     AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, FunctionSig, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef,
     ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm, PatternTerm,
-    ReturnAnnotation, Stmt, TypeDesc, get_binop_info, get_logicop_info, get_patop_info, has_attr,
+    ReturnAnnotation, Stmt, TypeDesc, TypeFnParam, get_binop_info, get_logicop_info,
+    get_patop_info, has_attr,
 };
 use duka_shared::{
     config::DukaParserConfig,
     constants::{catt, clex, cpar, ctype},
-    dtype::Type,
+    dtype::{KindShape, Type},
     errors::{DukaLexerError, DukaParserError, DukaSpannedError, Span},
     types::{
         DukaParser, Fact, Goal, LogicDatabase, LogicOp, Query, QueryCount, Rule, SourceInfo,
@@ -235,14 +236,16 @@ pub struct Parser<T> {
     handlers: BangHandlers,
     config: DukaParserConfig,
     logic: LogicDatabase,
+
+    // flags
     typing_context: bool,
+    kinding_context: bool,
     in_type_args: bool,
-    /// The `---!` run at the head of the file, as attributes on the chunk.
+
+    // --! chunk-level attributes
     chunk_attrs: Attrs,
     chunk_head_end: Option<Span>,
-    /// How many recursive grammar steps are open right now. The parser
-    /// recurses with the source, so this is what keeps a pathologically nested
-    /// file from overflowing the stack.
+
     depth: usize,
 }
 
@@ -253,6 +256,7 @@ struct ParserCheckpoint {
     logic_lengths: (usize, usize, usize),
     typing_context: bool,
     in_type_args: bool,
+    kind_position: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +295,7 @@ impl Parser<Token> {
             config,
             typing_context: false,
             in_type_args: false,
+            kinding_context: false,
             chunk_attrs: [].into(),
             chunk_head_end: None,
             depth: 0,
@@ -611,6 +616,7 @@ impl Parser<Token> {
             ),
             typing_context: self.typing_context,
             in_type_args: self.in_type_args,
+            kind_position: self.kinding_context,
         }
     }
 
@@ -853,14 +859,23 @@ impl Parser<Token> {
                 }
             }
             else: {
-                Self::expr_to_stmt(must!(self.expr())?)
+                let expr = must!(self.expr())?;
+                // `...` stands for the extra arguments inside a call, never for
+                // a statement of its own: `values...` is a typo, not a spread.
+                if matches!(&expr.0, NodeKind::VarArg) {
+                    return Err(self.err(DukaParserError::UnexpectedToken {
+                        got: "...".into(),
+                        expected: "<stmt>".into(),
+                    }));
+                }
+                Self::expr_to_stmt(expr)
             }
         );
         Ok(Some(self.stmt_end(kind, start_span)))
     }
 
     // Must!, `type function <name>` is consumed already
-    fn type_function(&mut self) -> Result<FuncBody, DukaSpannedError> {
+    fn type_function(&mut self) -> Result<(Box<[TypeFnParam]>, FuncBody), DukaSpannedError> {
         let saved = self.typing_context;
         self.typing_context = true;
         // A type function takes types as arguments -- in a type context a type
@@ -872,29 +887,30 @@ impl Parser<Token> {
                 expected: "a type function does not take type parameters".into(),
             }));
         }
-        let body = self.function_body(false);
+        let params = between!(self:
+            must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
+            in LParen, RParen
+        );
+        let body = self.function_body_tail(vec![], vec![], false, true)?;
+
         self.typing_context = saved;
-        body
+        Ok((params.into_boxed_slice(), body))
     }
 
     /// `type_function` for a caller whose `(params)` are read already, which
     /// `ty_def` reads before it knows whether the form is `= ty` or a block.
-    fn type_function_with_params(
-        &mut self,
-        params: Vec<Param>,
-        declared: bool,
-    ) -> Result<FuncBody, DukaSpannedError> {
+    fn type_function_body(&mut self, declared: bool) -> Result<FuncBody, DukaSpannedError> {
         let saved = self.typing_context;
         self.typing_context = true;
         if matches!(self.peek_token(0)?.0, TokenKind::Less) {
             return Err(self.err(DukaParserError::UnexpectedToken {
                 got: "<".into(),
-                expected: "a type function does not take type parameters".into(),
+                expected: "a type function does not take type parameters, you can simply pass types like values via \"()\" in type-context".into(),
             }));
         }
-        let body = self.function_body_tail(vec![], params, declared);
+        let body = self.function_body_tail(vec![], vec![], declared, true)?;
         self.typing_context = saved;
-        body
+        Ok(body)
     }
 
     fn ty_def(&mut self, attrs: Option<Attrs>) -> Result<NodeKind, DukaSpannedError> {
@@ -916,8 +932,6 @@ impl Parser<Token> {
                 in LParen, RParen
             );
 
-            // the span a reader lands on is the name's own: the symbol table
-            // answers a hover by the span of the token it was declared under
             let attr_name: AttrName = (((name, span), attrs.unwrap_or_default()), span);
 
             if self.then(TokenKind::Assign)? {
@@ -928,10 +942,8 @@ impl Parser<Token> {
 
                 NodeKind::InlineTypeFunction(attr_name, params.into_boxed_slice(), Box::new(ty))
             } else {
-                // `: T` is the declared form's return; the body is empty only
-                // because `@declare` says there is none.
-                let body = self.type_function_with_params(params, is_declared)?;
-                NodeKind::TypeFunction(attr_name, Box::new(body))
+                let body = self.type_function_body(is_declared)?;
+                NodeKind::TypeFunction(attr_name, params.into_boxed_slice(), Box::new(body))
             }
         } else {
             let (name, name_span) = self.must_type_name()?;
@@ -2288,12 +2300,63 @@ impl Parser<Token> {
     }
 
     #[inline]
-    fn type_fn(&mut self) -> Result<FuncBody, DukaSpannedError> {
+    fn type_fn(&mut self) -> Result<(Box<[TypeFnParam]>, FuncBody), DukaSpannedError> {
         let saved = self.typing_context;
         self.typing_context = true;
-        let body = self.fn_body();
+        let (params, body) = self.type_fn_expr_body()?;
         self.typing_context = saved;
-        body
+        Ok((params, body))
+    }
+
+    fn type_fn_expr_body(&mut self) -> Result<(Box<[TypeFnParam]>, FuncBody), DukaSpannedError> {
+        let generics = self.opt_ty_par_def_list()?;
+        let params = between!(self:
+            must opt(self.type_fn_params().map(|b| b.into_vec()))[vec![]]
+            in LParen, RParen
+        );
+
+        let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
+            let start = self.current_span;
+            let saved_kind = self.kinding_context;
+            self.kinding_context = true;
+            let read = self.parse_fn_returns();
+            self.kinding_context = saved_kind;
+            let (tys, var_arg, ensure, var_arg_bind) = read?;
+            Some(ReturnAnnotation {
+                tys,
+                var_arg,
+                var_arg_bind,
+                span: start + self.current_span,
+                ensure,
+            })
+        } else {
+            None
+        };
+
+        // Inside a `<...>` list the `>` that follows is the end of the list, so
+        // the body stops at it. Everywhere else this is an ordinary expression
+        // and runs as far as it likes, which is what the standard library's own
+        // `type fn` bodies rely on.
+        let body = if self.in_type_args {
+            must!(self.expr_limit(Self::type_fn_body_limit(), false))?
+        } else {
+            must!(self.expr())?
+        };
+        let span = body.1;
+
+        Ok((
+            params.into_boxed_slice(),
+            FuncBody(
+                [].into(),
+                generics.into(),
+                ret,
+                [].into(),
+                Box::new(Block(Box::new([Node(
+                    NodeKind::Return(Box::new([body]), false),
+                    span,
+                )]))),
+            ),
+        ))
     }
 
     /// The precedence at which a `type fn` body stops reading operators.
@@ -2467,7 +2530,7 @@ impl Parser<Token> {
             must opt(self.par_list())[vec![]]
             in LParen, RParen
         );
-        self.function_body_tail(generics, params, declared)
+        self.function_body_tail(generics, params, declared, false)
     }
 
     /// The half of a body after its generics and parameters, for a caller that
@@ -2478,10 +2541,17 @@ impl Parser<Token> {
         generics: Vec<TypeParam>,
         params: Vec<Param>,
         declared: bool,
+        kind_returns: bool,
     ) -> Result<FuncBody, DukaSpannedError> {
         let ret = if self.config.type_annotations && self.then(TokenKind::Colon)? {
             let start = self.current_span;
-            let (tys, var_arg, ensure, var_arg_bind) = self.parse_fn_returns()?;
+            let saved_kind = self.kinding_context;
+            if kind_returns {
+                self.kinding_context = true;
+            }
+            let read = self.parse_fn_returns();
+            self.kinding_context = saved_kind;
+            let (tys, var_arg, ensure, var_arg_bind) = read?;
             Some(ReturnAnnotation {
                 tys,
                 var_arg,
@@ -2727,14 +2797,14 @@ impl Parser<Token> {
                             start,
                         )));
                     }
-                    let body = if self.then(TokenKind::Fn)? {
+                    let (params, body) = if self.then(TokenKind::Fn)? {
                         self.type_fn()?
                     } else {
                         self.must_token(TokenKind::Function)?;
                         self.type_function()?
                     };
                     return Ok(Some(self.expr_end(
-                        NodeKind::TypeLit(TypeDesc::FnLit(Box::new(body))),
+                        NodeKind::TypeLit(TypeDesc::FnLit(params, Box::new(body))),
                         start,
                     )));
                 }
@@ -3105,8 +3175,43 @@ impl Parser<Token> {
         result
     }
 
+    fn try_kind_shape(&mut self) -> Result<Option<(KindShape, Span)>, DukaSpannedError> {
+        let shape = match &self.peek_token(0)?.0 {
+            TokenKind::Object => Some(KindShape::Object),
+            TokenKind::Ident(name) => KindShape::from_name(name),
+            _ => None,
+        };
+        let Some(shape) = shape else {
+            return Ok(None);
+        };
+        let span = self.next_token()?.1;
+        Ok(Some((shape, span)))
+    }
+
+    fn kind_bound_follows(&mut self) -> Result<bool, DukaSpannedError> {
+        Ok(matches!(
+            &self.peek_token(0)?.0,
+            TokenKind::Ident(_)
+                | TokenKind::Type
+                | TokenKind::Fn
+                | TokenKind::Function
+                | TokenKind::Object
+                | TokenKind::String(_)
+                | TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Nil
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Minus
+                | TokenKind::LParen
+        ))
+    }
+
     fn try_type_atom(&mut self) -> Result<Option<TypeDesc>, DukaSpannedError> {
         if self.then(TokenKind::Type)? {
+            let ty_span = self.current_span;
             if self.then(TokenKind::LParen)? {
                 let start_span = self.current_span;
                 let expr = must!(self.expr())?;
@@ -3114,10 +3219,25 @@ impl Parser<Token> {
                 self.must_token(TokenKind::RParen)?;
                 return self.finish_member(TypeDesc::TypeOf(Box::new(expr), start_span + end));
             }
-            let body = if self.then(TokenKind::Fn)? {
+            let (params, body) = if self.then(TokenKind::Fn)? {
                 self.type_fn()?
             } else if self.then(TokenKind::Function)? {
                 self.type_function()?
+            } else if self.kinding_context {
+                if let Some((shape, span)) = self.try_kind_shape()? {
+                    let args = if matches!(self.peek_token(0)?.0, TokenKind::Less) {
+                        self.next_token()?;
+                        self.ty_par_list()?
+                    } else {
+                        vec![]
+                    };
+                    return self.finish_member(TypeDesc::ShapeType(
+                        shape,
+                        args.into_boxed_slice(),
+                        span,
+                    ));
+                }
+                return self.finish_member(TypeDesc::AnyType(ty_span));
             } else {
                 let got = self.peek_token(0)?.0.name().into();
                 return Err(self.err(DukaParserError::UnexpectedToken {
@@ -3125,7 +3245,7 @@ impl Parser<Token> {
                     expected: "fn, function, or ( after type".into(),
                 }));
             };
-            return self.finish_member(TypeDesc::FnLit(Box::new(body)));
+            return self.finish_member(TypeDesc::FnLit(params, Box::new(body)));
         }
 
         // oneof
@@ -3139,6 +3259,16 @@ impl Parser<Token> {
         if keywordish.as_deref() == Some("Self") {
             let (_, span) = self.next_token()?;
             return self.finish_member(TypeDesc::SelfType(span));
+        }
+
+        if self.kinding_context && keywordish.as_deref() == Some(ctype::CONST) {
+            let (_, span) = self.next_token()?;
+            let bound = if self.kind_bound_follows()? {
+                Some(Box::new(self.parse_type_annotation()?))
+            } else {
+                None
+            };
+            return self.finish_member(TypeDesc::ConstLit(bound, span));
         }
 
         if self.config.type_annotations
@@ -3608,7 +3738,7 @@ impl Parser<Token> {
         Ok(if self.then(TokenKind::Dots)? {
             // `(...)` 单独作为唯一参数
             vec![if self.typing_context {
-                self.type_rest_param()?
+                self.type_rest_value_param()?
             } else {
                 Param::Var(
                     self.current_span,
@@ -3625,7 +3755,7 @@ impl Parser<Token> {
             while self.then(TokenKind::Comma)? {
                 if self.then(TokenKind::Dots)? {
                     res.push(if self.typing_context {
-                        self.type_rest_param()?
+                        self.type_rest_value_param()?
                     } else {
                         Param::Var(
                             self.current_span,
@@ -3643,18 +3773,21 @@ impl Parser<Token> {
             res
         })
     }
-    fn type_fn_params(&mut self) -> Result<Box<[Param]>, DukaSpannedError> {
+    fn type_fn_params(&mut self) -> Result<Box<[TypeFnParam]>, DukaSpannedError> {
+        let saved_kind = self.kinding_context;
+        self.kinding_context = true;
         let parse_param = |p: &mut Self| {
             let name = p.must_type_name()?;
             if p.config.type_annotations && p.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, p.parse_type_annotation()?))
+                let desc = p.parse_type_annotation()?;
+                Ok(TypeFnParam::lower(name, desc))
             } else {
-                Ok(Param::Name(name))
+                Ok(TypeFnParam::Name(name))
             }
         };
-        let mut res: Vec<Param> = vec![];
+        let mut res: Vec<TypeFnParam> = vec![];
         if self.then(TokenKind::Dots)? {
-            // `(...)` on its own is the only parameter
+            self.kinding_context = saved_kind;
             return Ok(vec![self.type_rest_param()?].into_boxed_slice());
         }
         loop {
@@ -3669,18 +3802,29 @@ impl Parser<Token> {
                 break;
             }
         }
+        self.kinding_context = saved_kind;
         Ok(res.into_boxed_slice())
     }
 
     /// The `...` of a type context: a name after it collects the arguments it
     /// stands for, a bare `...` keeps the position as one of ignore-what-follows
-    fn type_rest_param(&mut self) -> Result<Param, DukaSpannedError> {
+    fn type_rest_param(&mut self) -> Result<TypeFnParam, DukaSpannedError> {
         match &self.peek_token(0)?.0 {
             TokenKind::Ident(_) => {
                 let (name, span) = self.must_type_name()?;
-                Ok(Param::Pack((name, span), span))
+                Ok(TypeFnParam::Var(span, Some((name, span))))
             }
-            _ => Ok(Param::Var(self.current_span, None)),
+            _ => Ok(TypeFnParam::Var(self.current_span, None)),
+        }
+    }
+
+    /// The same `...` read as a value-level parameter, which is what a regular
+    /// parameter list in a type context holds
+    fn type_rest_value_param(&mut self) -> Result<Param, DukaSpannedError> {
+        match self.type_rest_param()? {
+            TypeFnParam::Var(span, Some(name)) => Ok(Param::Pack((name.0, span), span)),
+            TypeFnParam::Var(span, None) => Ok(Param::Var(span, None)),
+            _ => unreachable!("type_rest_param yields a Var"),
         }
     }
 
@@ -4332,6 +4476,7 @@ impl Parser<Token> {
                 };
                 parser.typing_context = checkpoint.typing_context;
                 parser.in_type_args = checkpoint.in_type_args;
+                parser.kinding_context = checkpoint.kind_position;
                 prefix.extend(previous.nodes.into_iter().take(index));
                 (parser, true, collect)
             } else {

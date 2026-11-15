@@ -1,4 +1,4 @@
-use std::{iter, ops::Range};
+use std::{collections::HashSet, iter, ops::Range};
 
 use crate::parser::ast::{
     Block, DukaChunk, Expr, Field, FuncBody, If, IfClause, MatchClause, Name, Node, NodeKind,
@@ -35,6 +35,7 @@ pub struct IRGenerator {
     using_regs: Vec<Box<[Reg]>>,
     used_reg_count: usize,
     expr_blocks: Vec<ExprBlock>,
+    globals: HashSet<Box<str>>,
 }
 
 /// Where a `break` carrying values leaves them for the `do`-expression it
@@ -88,6 +89,7 @@ impl IRGenerator {
             using_regs: vec![],
             used_reg_count: 0,
             expr_blocks: vec![],
+            globals: HashSet::new(),
             config,
         }
     }
@@ -378,6 +380,9 @@ impl IRGenerator {
                             Place::R(r) => LValue::Local(r),
                             Place::U(u) => LValue::UpVal(u),
                         }
+                    } else if self.globals.contains(name.as_str()) {
+                        let env = self.scopes.ensure_global();
+                        LValue::Global(self.only_modifiable(env)?, self.constants.push(name.into()))
                     } else {
                         LValue::NewLocal(name)
                     }
@@ -1221,6 +1226,7 @@ impl IRGenerator {
             + (self_call as usize);
 
         let mut irg = Self::new(self.config.clone(), self.source_info.clone());
+        irg.globals = self.globals.clone();
         std::mem::swap(&mut irg.scopes, &mut self.scopes);
         irg.constants = Constants::default();
         irg.enter(true);
@@ -1904,12 +1910,16 @@ fn max_break_arity(own: Option<&str>, stmts: &[Stmt]) -> usize {
     walk(own, stmts, true)
 }
 
-impl DukaGenerator<DukaIR> for IRGenerator {
-    type InputType = DukaChunk;
-    type ConfigType = DukaIRConfig;
-
-    fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<DukaIR, DukaIRError> {
+impl IRGenerator {
+    /// The globals the analyzer resolved, so a bare assignment to a declared
+    /// global writes it instead of introducing a local with the same name.
+    pub fn generate_with(
+        input: DukaChunk,
+        config: DukaIRConfig,
+        globals: HashSet<Box<str>>,
+    ) -> Result<DukaIR, DukaIRError> {
         let mut generator = Self::new(config, input.source_info);
+        generator.globals = globals;
         let up_indexes = generator.gen_main(input.block)?;
 
         Ok(DukaIR {
@@ -1933,5 +1943,14 @@ impl DukaGenerator<DukaIR> for IRGenerator {
             logic: Some(input.logic),
             label_names: Box::new(generator.labels.into_names()),
         })
+    }
+}
+
+impl DukaGenerator<DukaIR> for IRGenerator {
+    type InputType = DukaChunk;
+    type ConfigType = DukaIRConfig;
+
+    fn generate(input: Self::InputType, config: Self::ConfigType) -> Result<DukaIR, DukaIRError> {
+        Self::generate_with(input, config, HashSet::new())
     }
 }

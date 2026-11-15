@@ -1,7 +1,7 @@
 //! GC
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 use std::any::TypeId;
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -15,7 +15,7 @@ pub mod header;
 pub mod page;
 
 pub mod prelude {
-    pub use super::{Finalize, Gc, GcCell, GcCellRef, GcCellRefMut, Heap, Trace, Tracer};
+    pub use super::{Gc, GcCell, GcCellRef, GcCellRefMut, Heap, Trace, Tracer};
 }
 
 pub trait Trace {
@@ -30,9 +30,6 @@ impl<T: Trace> Trace for Option<T> {
     }
 }
 
-pub trait Finalize {
-    fn finalize(&self) {}
-}
 pub struct Tracer<'a> {
     pub heap: &'a mut Heap,
 }
@@ -96,18 +93,54 @@ impl<T> std::ops::Deref for Gc<T> {
 #[derive(Debug)]
 pub struct GcCell<T> {
     inner: UnsafeCell<T>,
+    borrow: Cell<isize>,
 }
 impl<T> GcCell<T> {
     pub fn new(val: T) -> Self {
         Self {
             inner: UnsafeCell::new(val),
+            borrow: Cell::new(0),
         }
+    }
+
+    pub fn borrow(&self) -> GcCellRef<'_, T> {
+        let b = self.borrow.get();
+        assert!(
+            b >= 0,
+            "GcCell already mutably borrowed, cannot borrow it immutably"
+        );
+        self.borrow.set(b + 1);
+        GcCellRef { inner: self }
+    }
+
+    pub fn borrow_mut(&self) -> GcCellRefMut<'_, T> {
+        assert!(
+            self.borrow.get() == 0,
+            "GcCell already borrowed, cannot borrow it either immutably or mutably again"
+        );
+        self.borrow.set(-1);
+        GcCellRefMut { inner: self }
     }
 
     /// # Safety
     /// 调用时不得存在同一 `GcCell` 的其他可变引用
     pub unsafe fn get(&self) -> &T {
+        debug_assert!(
+            self.borrow.get() >= 0,
+            "GcCell::get() while it was mutably borrowed"
+        );
         unsafe { &*self.inner.get() }
+    }
+
+    /// The value as a pointer, with no borrow recorded.
+    ///
+    /// A native function is `FnMut` but must not be marked mutably borrowed
+    /// while it runs: it calls back into the VM, and that code may reach the
+    /// same native again (a `__tostring` that calls `to_string`).
+    /// # Safety
+    /// The cell must not be written through another path at the same time.
+    pub unsafe fn as_ptr(&self) -> *mut T {
+        self.inner.get()
     }
 }
 
@@ -118,13 +151,6 @@ impl<T: Trace> Trace for GcCell<T> {
     }
 }
 
-impl<T: Finalize> Finalize for GcCell<T> {
-    fn finalize(&self) {
-        let inner_ref = unsafe { &*self.inner.get() };
-        inner_ref.finalize();
-    }
-}
-
 pub struct GcCellRef<'a, T> {
     inner: &'a GcCell<T>,
 }
@@ -132,6 +158,13 @@ impl<'a, T> std::ops::Deref for GcCellRef<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.inner.inner.get() }
+    }
+}
+impl<T> Drop for GcCellRef<'_, T> {
+    fn drop(&mut self) {
+        let b = self.inner.borrow.get();
+        debug_assert!(b > 0, "GcCellRef dropped without matching its borrow()");
+        self.inner.borrow.set(b - 1);
     }
 }
 
@@ -149,17 +182,24 @@ impl<'a, T> std::ops::DerefMut for GcCellRefMut<'a, T> {
         unsafe { &mut *self.inner.inner.get() }
     }
 }
-
-impl<T> Gc<GcCell<T>> {
-    pub fn borrow(&self) -> GcCellRef<'_, T> {
-        let cell_ptr = self.ptr.as_ptr() as *const GcCell<T>;
-        let cell_ref = unsafe { &*cell_ptr };
-        GcCellRef { inner: cell_ref }
+impl<T> Drop for GcCellRefMut<'_, T> {
+    fn drop(&mut self) {
+        debug_assert_eq!(
+            self.inner.borrow.get(),
+            -1,
+            "GcCellRefMut dropped without matching its borrow_mut()"
+        );
+        self.inner.borrow.set(0);
     }
+}
+impl<T> Gc<GcCell<T>> {
+    #[inline]
+    pub fn borrow(&self) -> GcCellRef<'_, T> {
+        (**self).borrow()
+    }
+    #[inline]
     pub fn borrow_mut(&self) -> GcCellRefMut<'_, T> {
-        let cell_ptr = self.ptr.as_ptr() as *const GcCell<T>;
-        let cell_ref = unsafe { &*cell_ptr };
-        GcCellRefMut { inner: cell_ref }
+        (**self).borrow_mut()
     }
 }
 
@@ -295,13 +335,9 @@ impl Heap {
             return idx;
         }
 
-        let pages = &mut self.page_map[class];
-        if let Some(idx) = pages.iter().position(|p| !p.is_full()) {
-            return idx;
-        }
-        let new_page = Box::new(Page::new(class));
-        pages.push(new_page);
-        pages.len() - 1
+        let idx = self.page_map[class].len();
+        self.page_map[class].push(Box::new(Page::new(class)));
+        idx
     }
 
     pub fn alloc_large<T: Trace + 'static>(&mut self, val: T) -> Gc<T> {
@@ -401,7 +437,7 @@ impl Heap {
         P: FnMut(*const (), TypeId, &mut Tracer),
         F: FnMut(*const (), TypeId),
     {
-        // Set white to all objects
+        // Set white to all objects, TODO: ensure then remove
         {
             self.gray_list.clear();
             for pages in &self.page_map {

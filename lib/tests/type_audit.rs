@@ -15,7 +15,7 @@ use std::{
 };
 
 /// How many sites inspect a `Type` without asking `base()` first.
-const BASELINE: usize = 99;
+const BASELINE: usize = 97;
 
 const SKIP: &[&str] = &["target", "ffi", "shared", "website", "node_modules", ".git"];
 

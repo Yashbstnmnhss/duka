@@ -121,7 +121,11 @@ impl<'a, 'b, 'c> Setup<'a, 'b, 'c> {
 
     pub fn ir(&self, src: &str, name: SourceName) -> Result<(DukaIR, AnalyzerData), DukaError> {
         let (chunk, data) = self.chunk(src, name)?;
-        Ok((crate::module::gen_ir(chunk, &self.ir_config)?, data))
+        let globals = data.1.symbols.global_names();
+        Ok((
+            crate::module::gen_ir(chunk, &self.ir_config, globals)?,
+            data,
+        ))
     }
 
     pub fn run(&self, src: &str, name: SourceName) -> Result<Box<[RuntimeValue]>, DukaError> {
@@ -198,7 +202,7 @@ pub fn simple_run_with(
 /// produced, a chunk that returns nothing reads as `nil`
 ///
 /// ```
-/// use duka_lib::{harness::run_last, value::RuntimeValue};
+/// use duka_lib::{harness::simple_run_last, value::RuntimeValue};
 ///
 /// let src = r#"
 /// local total = 0
@@ -206,8 +210,8 @@ pub fn simple_run_with(
 /// return total
 /// "#;
 ///
-/// assert_eq!(run_last(src).unwrap(), RuntimeValue::Int(10));
-/// assert_eq!(run_last("").unwrap(), RuntimeValue::Nil);
+/// assert_eq!(simple_run_last(src).unwrap(), RuntimeValue::Int(10));
+/// assert_eq!(simple_run_last("").unwrap(), RuntimeValue::Nil);
 /// ```
 pub fn simple_run_last(src: &str) -> Result<RuntimeValue, DukaError> {
     simple_run_last_with(src, default_vm_globals())

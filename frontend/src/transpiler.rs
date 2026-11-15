@@ -3,6 +3,7 @@ use std::fmt::Display;
 
 use crate::parser::ast::{
     Block, DukaChunk, Expr, Field, FuncBody, If, Node, NodeKind, Param, Path, PathSuffix, Stmt,
+    TypeFnParam,
 };
 use duka_shared::constants::cpar;
 use duka_shared::types::{BinOp, DukaGenerator, UnOp};
@@ -503,9 +504,25 @@ impl DebugTranspiler {
                 self.emit(&td.to_string());
                 self.newline();
             }
-            NodeKind::TypeFunction(name, func_body) => {
+            NodeKind::TypeFunction(name, params, func_body) => {
                 self.emit_ident("type function ");
                 self.emit(&name.0.0.0);
+                self.emit("(");
+                self.gen_list(
+                    params,
+                    |st, p| {
+                        match p {
+                            TypeFnParam::Name(n)
+                            | TypeFnParam::Kinded(n, _)
+                            | TypeFnParam::Typed(n, _) => st.emit(&n.0),
+                            TypeFnParam::Var(_, Some(n)) => st.emit(&format!("...{}", n.0)),
+                            TypeFnParam::Var(_, None) => st.emit("..."),
+                        }
+                        Ok(())
+                    },
+                    false,
+                )?;
+                self.emit(")");
                 self.gen_func_body(*func_body, true)?;
                 self.newline();
             }
@@ -517,9 +534,11 @@ impl DebugTranspiler {
                     params,
                     |st, p| {
                         match p {
-                            Param::Name(n) | Param::Typed(n, _) => st.emit(&n.0),
-                            Param::Var(..) => st.emit("..."),
-                            Param::Pack(n, _) => st.emit(&format!("...{}", n.0)),
+                            TypeFnParam::Name(n)
+                            | TypeFnParam::Kinded(n, _)
+                            | TypeFnParam::Typed(n, _) => st.emit(&n.0),
+                            TypeFnParam::Var(_, Some(n)) => st.emit(&format!("...{}", n.0)),
+                            TypeFnParam::Var(_, None) => st.emit("..."),
                         }
                         Ok(())
                     },

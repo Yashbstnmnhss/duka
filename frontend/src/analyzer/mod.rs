@@ -117,7 +117,7 @@ use crate::{
     parser::ast::{
         Attrs, Block, DukaChunk, Expr, FuncBody, If, IfClause, Match, MatchClause, Node, NodeKind,
         ObjectDef, ObjectProperty, Param, ParamMode, Path, PathSuffix, ReturnAnnotation, Stmt,
-        TypeDesc, TypeParam, WhereClause, doc_text, has_attr,
+        TypeDesc, TypeFnParam, TypeParam, WhereClause, doc_text, has_attr,
     },
 };
 
@@ -291,6 +291,7 @@ pub type CallResults = Vec<(Box<str>, Box<[TypeValue]>, TypeValue)>;
 #[derive(Debug, Clone)]
 pub struct TypeFn {
     pub name: Box<str>,
+    pub params: Box<[TypeFnParam]>,
     pub body: Box<FuncBody>,
     pub span: Span,
 }
@@ -298,7 +299,7 @@ pub struct TypeFn {
 #[derive(Debug, Clone)]
 pub struct InlineTypeFn {
     pub name: Box<str>,
-    pub params: Box<[Param]>,
+    pub params: Box<[TypeFnParam]>,
     pub ret_ty: TypeDesc,
     pub span: Span,
 }
@@ -546,9 +547,9 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.declare_record_fields(inner, owner);
                         }
                     }
-                    TypeDesc::FnLit(body) => {
-                        for p in body.0.iter() {
-                            if let Param::Typed(_, t) = p {
+                    TypeDesc::FnLit(params, body) => {
+                        for p in params.iter() {
+                            if let TypeFnParam::Typed(_, t) = p {
                                 self.declare_record_fields(t, owner);
                             }
                         }
@@ -569,6 +570,17 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     TypeDesc::Pure(_) | TypeDesc::Named(..) | TypeDesc::TypeOf(..) => (),
                     TypeDesc::SelfType(_) => (),
+                    TypeDesc::AnyType(_) => (),
+                    TypeDesc::ShapeType(_, args, _) => {
+                        for inner in args.iter() {
+                            self.declare_record_fields(inner, owner);
+                        }
+                    }
+                    TypeDesc::ConstLit(bound, _) => {
+                        if let Some(bound) = bound.as_deref() {
+                            self.declare_record_fields(bound, owner);
+                        }
+                    }
                 }
             }
         }
@@ -722,12 +734,13 @@ impl DukaAnalyzer for ScopeAnalyzer {
                         }
                         self.declare_record_fields(ty, owner);
                     }
-                    NodeKind::TypeFunction(ref name, ref body) => {
+                    NodeKind::TypeFunction(ref name, ref params, ref body) => {
                         let (key, span) = name;
                         self.check_name(&key.0.0, *span, true);
                         let id = self.0.type_fns.len();
                         self.0.type_fns.push(TypeFn {
                             name: key.0.0.clone().into_boxed_str(),
+                            params: params.clone(),
                             body: body.clone(),
                             span: *span,
                         });

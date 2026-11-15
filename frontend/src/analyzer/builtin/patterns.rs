@@ -25,7 +25,7 @@ fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
 fn text_pat(v: Box<[TypeValue]>, f: fn(Box<str>) -> TextPred) -> TypeResult {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
-    if !matches!(base.base(), Type::String) {
+    if base.base() != &Type::String {
         return Err(format!("this pattern needs a string type, got {base}"));
     }
     let part = string_arg(&v.next().expect("Checked"))?;
@@ -35,7 +35,7 @@ fn text_pat(v: Box<[TypeValue]>, f: fn(Box<str>) -> TextPred) -> TypeResult {
 fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
     let mut v = v.into_iter();
     let base = v.next().expect("Checked").to_type();
-    if !matches!(base.base(), Type::String) {
+    if base.base() != &Type::String {
         return Err(format!("this pattern needs a string type, got {base}"));
     }
     let n = match v.next().expect("Checked").to_type() {

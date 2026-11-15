@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     hash::Hash,
     iter::Fuse,
@@ -1029,6 +1029,18 @@ impl SymbolTable {
     }
     pub fn scopes(&self) -> &[Symbols] {
         &self.scopes
+    }
+
+    /// Every name the table declares as a global, wherever it was declared.
+    /// A bare assignment to one of these writes that global rather than
+    /// shadowing it with a fresh local.
+    pub fn global_names(&self) -> HashSet<Box<str>> {
+        self.scopes
+            .iter()
+            .flat_map(|scope| scope.symbols.iter())
+            .filter(|(_, syms)| syms.iter().any(|s| s.is_global))
+            .map(|(name, _)| name.clone())
+            .collect()
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.lookup_label_in(key, self.current)

@@ -398,6 +398,19 @@ function f<T>(x: T) where T: Point, Sized(T), type V = T
 
 The whole list is optional, each clause is checked on its own.
 
+## Kinds
+
+Kinds means the "type of type", representing the kinds of different types.
+Kinds are used in `type function` to **constrain** the parameters which are types in type-context.
+
+Main categories of kinds are following:
+
+- Exact type: `type ...`, accepts the subtype of it
+- Literal type: `const ...`, only accepts literal value (but as types)
+- Type function: `fn(params) -> return`
+- Either kinds: `Kind | Kind2`, like the union type
+- Any type: `type`, accepts any types, like `any` accepts any values
+
 ## See also
 
 - [Type context](/language/type-context/) — `type`, type functions, HKT

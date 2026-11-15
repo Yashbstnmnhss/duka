@@ -27,8 +27,8 @@ use crate::{
         frame::{CallFrame, CallProto, Stack},
     },
 };
-use duka_gc::{Finalize, Trace, Tracer};
 use duka_gc::{Gc, GcCell};
+use duka_gc::{Trace, Tracer};
 use duka_macros::Info;
 use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
@@ -506,10 +506,6 @@ impl CoState {
     }
 }
 
-impl Finalize for CoState {
-    fn finalize(&self) {}
-}
-
 impl Trace for CoState {
     fn trace(&self, tracer: &mut Tracer) {
         // Trace stack values
@@ -721,7 +717,10 @@ pub(crate) fn call_native_meta_sync(
     for p in params {
         sv.stack.push(*p);
     }
-    (closure.borrow_mut().func)(sv, heap, api)?;
+    let _shared = closure.borrow();
+    // safety: the pointer only calls the function the cell holds; the shared
+    // guard keeps a write to the cell itself from happening underneath.
+    unsafe { ((*GcCell::as_ptr(&closure)).func)(sv, heap, api) }?;
     let results = std::mem::take(&mut sv.stack);
     sv.stack = saved_stack;
     sv.set_base(saved_base);
@@ -760,9 +759,6 @@ impl Coroutine {
         self.inner.call(heap, api, func, narg, nwanted, tailcall)
     }
 }
-impl Finalize for Coroutine {
-    fn finalize(&self) {}
-}
 
 impl Trace for Coroutine {
     fn trace(&self, tracer: &mut Tracer) {
@@ -795,6 +791,7 @@ impl CoState {
         Ok(match *borrow {
             UpValue::Closed(ref mut v) => f(v),
             UpValue::Open(i) => {
+                drop(borrow);
                 let val = self
                     .stack
                     .get_mut(i)
@@ -1342,8 +1339,8 @@ impl CoState {
                             }
                         }
                         Array(arr) => {
-                            let b = arr.borrow();
-                            vm!(R(a) := Int(b.len() as DukaInt));
+                            let len = arr.borrow().len();
+                            vm!(R(a) := Int(len as DukaInt));
                         }
                         _ => return Err(UnsupportedOperation("len", val.type_name_of())),
                     }
@@ -1655,7 +1652,6 @@ impl CoState {
                     // The caller's caches live in its frame; reload them.
                     self.sync_from_current();
                     let abs_func = proto_slot;
-                    self.pop_frame().ok_or(NoCallFrame)?;
 
                     let src = abs_func + 1 + from;
                     let dst = abs_func;
@@ -1758,25 +1754,33 @@ impl CoState {
                 }
                 SetUpVal(a, i) => {
                     let val = *vm!(R(a));
-                    let mut up_val = vm!(UpVal(i)).borrow_mut();
-                    match *up_val {
-                        UpValue::Open(idx) => {
-                            self.stack[idx] = val;
+                    let open = {
+                        let mut up_val = vm!(UpVal(i)).borrow_mut();
+                        match *up_val {
+                            UpValue::Open(idx) => Some(idx),
+                            UpValue::Closed(ref mut old_val) => {
+                                *old_val = val;
+                                None
+                            }
                         }
-                        UpValue::Closed(ref mut old_val) => *old_val = val,
+                    };
+                    if let Some(idx) = open {
+                        self.stack[idx] = val;
                     }
                 }
 
                 GetTabUp(a, b, k) => {
-                    let up_val = vm!(UpVal(b)).borrow();
-                    let table = match self.unpack_up_val(&up_val)? {
-                        Table(t) => t,
-                        other => {
-                            return Err(ExpectedType(ctype::TAB, other.type_name_of()));
-                        }
+                    let res = {
+                        let up_val = vm!(UpVal(b)).borrow();
+                        let table = match self.unpack_up_val(&up_val)? {
+                            Table(t) => t,
+                            other => {
+                                return Err(ExpectedType(ctype::TAB, other.type_name_of()));
+                            }
+                        };
+                        let key = vm!(K(k));
+                        table.borrow().inner.get(&key).cloned().unwrap_or_default()
                     };
-                    let key = vm!(K(k));
-                    let res = table.borrow().inner.get(&key).cloned().unwrap_or_default();
                     vm!(R(a) := res);
                 }
                 GetTable(a, b, c) => {
@@ -1856,7 +1860,7 @@ impl CoState {
                 }
                 Self_(a, b, c, k) => {
                     let table = match vm!(R(b)) {
-                        Table(t) => t,
+                        Table(t) => Gc::clone(t),
                         other => {
                             return Err(ExpectedType(ctype::TAB, other.type_name_of()));
                         }
@@ -1864,15 +1868,17 @@ impl CoState {
                     let key = vm!(RK(c, k));
                     (!key.is_string())
                         .then_error(|| ExpectedType(ctype::STR, key.type_name_of()))?;
-                    let table_ref = table.borrow();
-                    let func = table_ref
-                        .inner
-                        .get(&key)
-                        .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?;
+                    let func = {
+                        let table_ref = table.borrow();
+                        *table_ref
+                            .inner
+                            .get(&key)
+                            .ok_or(NoSuchKey(key.eval_to_string().into_owned(), ctype::TAB))?
+                    };
                     (!func.is_function())
                         .then_error(|| ExpectedType(ctype::FUN, func.type_name_of()))?;
 
-                    vm!(R(a) := *func);
+                    vm!(R(a) := func);
                     vm!(R(a + 1) := R(b));
                 }
                 AddI(a, b, n) => {
@@ -2700,7 +2706,8 @@ impl CoState {
                 return Ok(RuntimeValue::Nil);
             }
             seen.push(cur);
-            match cur.borrow().get_meta_method(heap, &MetaMethod::Index) {
+            let meta = cur.borrow().get_meta_method(heap, &MetaMethod::Index);
+            match meta {
                 Some(RuntimeValue::Table(fallback)) => cur = fallback,
                 Some(m) if m.is_function() => {
                     return self.call_sync_one(heap, api, m, [RuntimeValue::Table(cur), *key]);
@@ -2770,7 +2777,8 @@ impl CoState {
         if existed {
             return Ok(());
         }
-        if let Some(mt) = tab.borrow().metatable {
+        let mt = tab.borrow().metatable;
+        if let Some(mt) = mt {
             let m = mt
                 .borrow()
                 .get(&RuntimeValue::meta_method_key(heap, &MetaMethod::NewIndex))
@@ -2866,7 +2874,7 @@ impl CoState {
 
         match callee {
             NativeFunc(closure) => {
-                let mut ptr = closure.borrow_mut();
+                let _shared = closure.borrow();
 
                 if tailcall {
                     self.close_up_values()?;
@@ -2876,7 +2884,11 @@ impl CoState {
                 // at `R0..`, so the frame base is the callee slot itself.
                 self.set_base(func + base);
 
-                let nreturn = match (ptr.func)(self, heap, api)? {
+                // safety: the pointer only calls the function the cell holds;
+                // the shared guard above keeps the cell alive and marks it
+                // borrowed, so a write to it elsewhere still faults.
+                let nreturn = match unsafe { ((*GcCell::as_ptr(&closure)).func)(self, heap, api) }?
+                {
                     ValueCount::VarArg => self.stack.len() - (func + base),
                     ValueCount::Exact(n) => n,
                 };

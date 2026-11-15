@@ -3921,7 +3921,7 @@ fn type_fn_signature(
     name: &str,
 ) -> String {
     use duka_lib::duka_frontend::analyzer::typechecker::normalize_generic_names;
-    use duka_lib::duka_frontend::parser::ast::{Param, ReturnAnnotation, TypeDesc};
+    use duka_lib::duka_frontend::parser::ast::{ReturnAnnotation, TypeDesc, TypeFnParam};
 
     // a name in a type position that is one of this function's own parameters is
     // that parameter, not a lookup that finds nothing
@@ -3973,19 +3973,24 @@ fn type_fn_signature(
             | TypeDesc::Named(..)
             | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
-            | TypeDesc::FnLit(_)
             | TypeDesc::SelfType(_)
-            | TypeDesc::Array(None) => false,
+            | TypeDesc::Array(None)
+            | TypeDesc::AnyType(_) => false,
+            TypeDesc::FnLit(fparams, _) => fparams
+                .iter()
+                .any(|p| matches!(p, TypeFnParam::Typed(_, t) if has_splice(t))),
+            TypeDesc::ShapeType(_, args, _) => args.iter().any(has_splice),
+            TypeDesc::ConstLit(bound, _) => bound.as_deref().is_some_and(has_splice),
         }
     }
-    fn params(list: &[Param], names: &[Box<str>]) -> String {
+    fn params(list: &[TypeFnParam], names: &[Box<str>]) -> String {
         list.iter()
             .map(|p| match p {
-                Param::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
-                Param::Name((n, _)) => n.to_string(),
-                Param::Var(_, Some((n, _))) => format!("...: {n}"),
-                Param::Pack((n, _), _) => format!("...{n}"),
-                _ => "...".to_owned(),
+                TypeFnParam::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
+                TypeFnParam::Name((n, _)) => n.to_string(),
+                TypeFnParam::Kinded((n, _), k) => format!("{n}: {k}"),
+                TypeFnParam::Var(_, Some((n, _))) => format!("...{n}"),
+                TypeFnParam::Var(_, None) => "...".to_owned(),
             })
             .collect::<Vec<_>>()
             .join(", ")
@@ -4014,7 +4019,7 @@ fn type_fn_signature(
         SymbolType::TypeFunction(id) => analysis.scope.type_fns.get(*id).map(|f| {
             let names = type_param_names(&f.body);
             (
-                params(&f.body.0, &names),
+                params(&f.params, &names),
                 returns(f.body.2.as_ref(), &names),
             )
         }),
@@ -4026,13 +4031,13 @@ fn type_fn_signature(
                 .params
                 .iter()
                 .filter_map(|p| match p {
-                    Param::Name((n, _)) | Param::Typed((n, _), _) => {
+                    TypeFnParam::Name((n, _))
+                    | TypeFnParam::Kinded((n, _), _)
+                    | TypeFnParam::Typed((n, _), _)
+                    | TypeFnParam::Var(_, Some((n, _))) => {
                         Some(n.as_str().to_owned().into_boxed_str())
                     }
-                    Param::Var(_, Some((n, _))) | Param::Pack((n, _), _) => {
-                        Some(n.as_str().to_owned().into_boxed_str())
-                    }
-                    _ => None,
+                    TypeFnParam::Var(_, None) => None,
                 })
                 .collect();
             (params(&f.params, &names), show(&f.ret_ty, &names))

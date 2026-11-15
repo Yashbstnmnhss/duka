@@ -1,6 +1,6 @@
 //! Default module loader helpers for `require()`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -95,10 +95,19 @@ pub fn parse_bangs(
 /// no file behind it should stay `SourceName::Unnamed`
 ///
 /// ```
-/// use duka_lib::module::{from_source, proto_to_bytes};
+/// use duka_lib::module::{gen_source, proto_to_bytes};
+/// use duka_shared::config::{DukaIRConfig, DukaParsingConfig};
 /// use duka_shared::types::SourceName;
 ///
-/// let proto = from_source("return 7", SourceName::Unnamed, Default::default()).unwrap();
+/// let proto = gen_source(
+///     "return 7",
+///     SourceName::Unnamed,
+///     DukaParsingConfig::default(),
+///     DukaIRConfig::default(),
+///     None,
+///     None,
+/// )
+/// .unwrap();
 /// assert!(!proto.instructions.is_empty());
 ///
 /// let bytes = proto_to_bytes(&proto).unwrap();
@@ -183,13 +192,13 @@ pub fn adapt_analyze_check(
 ///
 /// ```no_run
 /// # use duka_lib::module::{Check, FileModuleSourceProvider};
-/// # use duka_shared::config::DukaConfig;
+/// # use duka_shared::config::DukaParsingConfig;
 /// # use duka_frontend::analyzer::modules::ModuleBuildCache;
 /// # let mut cache = ModuleBuildCache::default();
 /// # let mut chunk: duka_frontend::parser::ast::DukaChunk = unimplemented!();
 /// let provider = FileModuleSourceProvider::for_entry(None);
 /// let (_data, errors) = Check::new(&provider)
-///     .config(&DukaConfig::default())
+///     .config(&DukaParsingConfig::default())
 ///     .build_cache(&mut cache)      // an editor re-checking the same files
 ///     .run(&mut chunk);
 /// ```
@@ -285,8 +294,12 @@ pub fn analyze_chunk(
     Ok(data)
 }
 
-pub fn gen_ir(chunk: DukaChunk, config: &DukaIRConfig) -> Result<DukaIR, DukaError> {
-    IRGenerator::generate(chunk, config.clone()).map_err(DukaError::Generator)
+pub fn gen_ir(
+    chunk: DukaChunk,
+    config: &DukaIRConfig,
+    globals: HashSet<Box<str>>,
+) -> Result<DukaIR, DukaError> {
+    IRGenerator::generate_with(chunk, config.clone(), globals).map_err(DukaError::Generator)
 }
 
 pub fn gen_proto(ir: DukaIR, mut analysis: Option<AnalyzerData>) -> Result<DukaProto, DukaError> {
@@ -314,7 +327,8 @@ pub fn gen_source_with(
     let mut chunk = parse_source(source, name, &paring_config, macros, bangs)?;
     let provider = FileModuleSourceProvider::for_entry(chunk.source_info.name.path());
     let data = analyze_chunk(&mut chunk, &paring_config, &provider, build_cache, adapted)?;
-    let ir = gen_ir(chunk, &ir_config)?;
+    let globals = data.1.symbols.global_names();
+    let ir = gen_ir(chunk, &ir_config, globals)?;
     gen_proto(ir, Some(data))
 }
 

@@ -10,8 +10,8 @@ use duka_shared::constants::{ccallish, ctype};
 use duka_shared::types::UnOp;
 use duka_shared::{
     dtype::{
-        Constraint, FunctionType, REC_PARAM_PREFIX, SELF_MARKER, Subject, Ty, Type, rec_marker,
-        self_marker, substitute_self,
+        Constraint, FunctionType, Kind, NoExt, REC_PARAM_PREFIX, SELF_MARKER, Subject, Ty, Type,
+        rec_marker, self_marker, substitute_self,
     },
     errors::{DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo},
@@ -27,15 +27,30 @@ use crate::analyzer::modules::{
 };
 use crate::analyzer::tcx::TypeLevelGate;
 use crate::analyzer::typechecker::{substitute_back_edges, substitute_params};
-use crate::analyzer::tyval::{TypeClosure, TypeValue, TypeValueExt, lift, tagged, tv};
+use crate::analyzer::tyval::{
+    TypeClosure, TypeValue, TypeValueExt, kind_accepts, lift, tagged, tv,
+};
 use crate::parser::ast::{Field, PatternArrayTerm, PatternOp};
 use crate::{
     analyzer::{AnalyzerData, InlineTypeFn, ObjectType, TypeFn, Visit, Visitor},
     parser::ast::{
         DukaChunk, Expr, FuncBody, If, Match, Node, NodeKind, Param, Path, PathSuffix, PatternTerm,
-        Stmt, TypeDesc,
+        Stmt, TypeDesc, TypeFnParam,
     },
 };
+
+fn kind_spelling(desc: &TypeDesc) -> bool {
+    match desc {
+        TypeDesc::AnyType(_) | TypeDesc::ShapeType(..) | TypeDesc::ConstLit(..) => true,
+        TypeDesc::Union(items) => items.iter().any(kind_spelling),
+        TypeDesc::Function(Some(sig)) => sig
+            .params
+            .iter()
+            .chain(sig.returns.iter())
+            .any(kind_spelling),
+        _ => false,
+    }
+}
 
 /// type-context
 pub struct TypeEval;
@@ -459,7 +474,7 @@ impl<'a> EvalCtx<'a> {
                 ExportedTypeKind::TypeFn(id) => match module.analysis.type_fns.get(*id) {
                     Some(fn_def) => self.to_type(&closure!(Box::new(TypeClosure::duka(
                         &fn_def.name,
-                        fn_def.body.0.clone(),
+                        fn_def.params.clone(),
                         fn_def.body.clone(),
                         vec![],
                     )))),
@@ -928,9 +943,22 @@ impl<'a> EvalCtx<'a> {
             // refusing a form the language does support, in the one position
             // where answering it is not yet defined rather than wrong.
             TypeDesc::TypeOf(..) => tv!(Type::Any),
-            TypeDesc::FnLit(body) => {
-                for p in body.0.iter() {
-                    if let Param::Typed(.., t) = p {
+            TypeDesc::AnyType(_) => tv!(Type::Any),
+            TypeDesc::ShapeType(_, args, _) => {
+                for arg in args.iter() {
+                    let _ = self.eval_type(arg);
+                }
+                tv!(Type::Any)
+            }
+            TypeDesc::ConstLit(bound, _) => {
+                if let Some(bound) = bound {
+                    let _ = self.eval_type(bound);
+                }
+                tv!(Type::Any)
+            }
+            TypeDesc::FnLit(params, body) => {
+                for p in params.iter() {
+                    if let TypeFnParam::Typed(.., t) = p {
                         let _ = self.eval_type(t);
                     }
                 }
@@ -941,7 +969,7 @@ impl<'a> EvalCtx<'a> {
                 }
                 closure!(Box::new(TypeClosure::duka(
                     "__anon",
-                    body.0.clone(),
+                    params.clone(),
                     body.clone(),
                     self.frames.clone(),
                 )))
@@ -1158,7 +1186,7 @@ impl<'a> EvalCtx<'a> {
                             if let Some(fn_def) = self.type_fns.get(id) {
                                 closure!(Box::new(TypeClosure::duka(
                                     name,
-                                    fn_def.body.0.clone(),
+                                    fn_def.params.clone(),
                                     fn_def.body.clone(),
                                     vec![],
                                 )))
@@ -1258,7 +1286,7 @@ impl<'a> EvalCtx<'a> {
             SymbolType::TypeFunction(id) => match self.type_fns.get(id) {
                 Some(fn_def) => {
                     let c =
-                        TypeClosure::duka(name, fn_def.body.0.clone(), fn_def.body.clone(), vec![]);
+                        TypeClosure::duka(name, fn_def.params.clone(), fn_def.body.clone(), vec![]);
                     self.apply_closure_with(&c, args, span, marks)
                 }
                 None => {
@@ -1318,7 +1346,7 @@ impl<'a> EvalCtx<'a> {
     fn call_inline_closure(
         &mut self,
         name: &str,
-        params: &[Param],
+        params: &[TypeFnParam],
         ret: &TypeDesc,
         args: Box<[TypeValue]>,
         span: Span,
@@ -1334,7 +1362,7 @@ impl<'a> EvalCtx<'a> {
         self.fuel -= 1;
         let expected_arity = params
             .iter()
-            .filter(|p| !matches!(p, Param::Var(..) | Param::Pack(..)))
+            .filter(|p| !matches!(p, TypeFnParam::Var(..)))
             .count();
         let open = expected_arity != params.len();
         if args.len() < expected_arity || (!open && args.len() != expected_arity) {
@@ -1348,14 +1376,14 @@ impl<'a> EvalCtx<'a> {
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
             let pname = match param {
-                Param::Typed((n, _), _) => n,
-                Param::Name((n, _)) => n,
-                Param::Var(..) | Param::Pack(..) => continue,
+                TypeFnParam::Typed((n, _), _) => n,
+                TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) => &n.0,
+                TypeFnParam::Var(..) => continue,
             };
             frame.insert(pname.clone().into_boxed_str(), (arg.clone(), false));
         }
-        if let Some(Param::Pack((name, _), _)) =
-            params.iter().find(|p| matches!(p, Param::Pack(..)))
+        if let Some(TypeFnParam::Var(_, Some((name, _)))) =
+            params.iter().find(|p| matches!(p, TypeFnParam::Var(..)))
         {
             let left = args
                 .iter()
@@ -1367,7 +1395,7 @@ impl<'a> EvalCtx<'a> {
                 (tv!(Type::TypeTuple(left, None)), false),
             );
         }
-        if params.iter().any(|p| matches!(p, Param::Var(..))) {
+        if params.iter().any(|p| matches!(p, TypeFnParam::Var(..))) {
             let left = args
                 .iter()
                 .skip(expected_arity)
@@ -1449,7 +1477,7 @@ impl<'a> EvalCtx<'a> {
     fn apply(
         &mut self,
         name: &str,
-        params: &[Param],
+        params: &[TypeFnParam],
         body: &FuncBody,
         captured: &[HashMap<Box<str>, (TypeValue, bool)>],
         args: Box<[TypeValue]>,
@@ -1481,7 +1509,7 @@ impl<'a> EvalCtx<'a> {
     fn apply_inner(
         &mut self,
         name: &str,
-        params: &[Param],
+        params: &[TypeFnParam],
         body: &FuncBody,
         captured: &[HashMap<Box<str>, (TypeValue, bool)>],
         args: Box<[TypeValue]>,
@@ -1507,7 +1535,7 @@ impl<'a> EvalCtx<'a> {
     fn apply_inner_body(
         &mut self,
         name: &str,
-        params: &[Param],
+        params: &[TypeFnParam],
         body: &FuncBody,
         captured: &[HashMap<Box<str>, (TypeValue, bool)>],
         args: Box<[TypeValue]>,
@@ -1592,7 +1620,7 @@ impl<'a> EvalCtx<'a> {
                         break tv!(Type::Any);
                     };
                     let Some(next_frame) =
-                        self.bind_params(&next_name, &next_def.body.0, &next_args, next_span)
+                        self.bind_params(&next_name, &next_def.params, &next_args, next_span)
                     else {
                         break tv!(Type::Any);
                     };
@@ -1607,6 +1635,27 @@ impl<'a> EvalCtx<'a> {
                 }
             }
         };
+        if let Some(ret) = &body.2
+            && ret.tys.iter().any(kind_spelling)
+        {
+            let mut bad: Option<String> = None;
+            for ty in ret.tys.iter() {
+                let kind = self.eval_kind(ty);
+                if let Err(msg) = kind_accepts(&kind, &result) {
+                    bad = Some(msg);
+                    break;
+                }
+            }
+            if let Some(msg) = bad {
+                self.err(name, format!("return kind mismatch, {msg}"), span);
+                while self.frames.len() > saved_len {
+                    self.frames.pop();
+                }
+                self.call_span_stack.pop();
+                self.depth -= 1;
+                return tv!(Type::Any);
+            }
+        }
         while self.frames.len() > saved_len {
             self.frames.pop();
         }
@@ -1886,10 +1935,70 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
+    fn eval_kind(&mut self, desc: &TypeDesc) -> Kind<NoExt> {
+        match desc {
+            TypeDesc::AnyType(_) => Kind::AnyType,
+            TypeDesc::ShapeType(shape, args, _) => {
+                let args: Box<[Kind<NoExt>]> = args.iter().map(|a| self.eval_kind(a)).collect();
+                Kind::Shape(*shape, args)
+            }
+            TypeDesc::ConstLit(bound, _) => Kind::LiteralType(match bound {
+                Some(b) => self.eval_type(b).to_type(),
+                None => Type::Any,
+            }),
+            TypeDesc::Union(members) => {
+                Kind::Either(members.iter().map(|m| self.eval_kind(m)).collect())
+            }
+            TypeDesc::Function(Some(sig)) => {
+                let kind_members = sig
+                    .params
+                    .iter()
+                    .chain(sig.returns.iter())
+                    .any(kind_spelling);
+                if kind_members {
+                    Kind::TypeFn(None)
+                } else {
+                    let ty = self.eval_type(desc).to_type();
+                    self.kind_of_type(ty)
+                }
+            }
+            TypeDesc::FnLit(params, body) => {
+                let spelling = |p: &TypeFnParam| match p {
+                    TypeFnParam::Typed(_, t) => kind_spelling(t),
+                    TypeFnParam::Kinded(..) => true,
+                    _ => false,
+                };
+                let kind_members = params.iter().any(spelling)
+                    || body
+                        .2
+                        .as_ref()
+                        .is_some_and(|r| r.tys.iter().any(kind_spelling));
+                if kind_members {
+                    Kind::TypeFn(None)
+                } else {
+                    let ty = self.eval_type(desc).to_type();
+                    self.kind_of_type(ty)
+                }
+            }
+            TypeDesc::Pure(ty) => self.kind_of_type(ty.clone()),
+            _ => {
+                let ty = self.eval_type(desc).to_type();
+                self.kind_of_type(ty)
+            }
+        }
+    }
+
+    fn kind_of_type(&mut self, ty: Type) -> Kind<NoExt> {
+        match ty {
+            Type::Any | Type::Unknown => Kind::AnyType,
+            t => Kind::OfType(t),
+        }
+    }
+
     fn bind_params(
         &mut self,
         fn_name: &str,
-        params: &[Param],
+        params: &[TypeFnParam],
         args: &[TypeValue],
         span: Span,
     ) -> Option<HashMap<Box<str>, (TypeValue, bool)>> {
@@ -1897,7 +2006,7 @@ impl<'a> EvalCtx<'a> {
         // line up is the count of the parameters before it
         let fixed = params
             .iter()
-            .filter(|p| !matches!(p, Param::Var(..) | Param::Pack(..)))
+            .filter(|p| !matches!(p, TypeFnParam::Var(..)))
             .count();
         let open = fixed != params.len();
         if args.len() < fixed || (!open && args.len() != fixed) {
@@ -1910,40 +2019,42 @@ impl<'a> EvalCtx<'a> {
         }
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
-            let pname = match param {
-                Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
-                Param::Var(..) | Param::Pack(..) => continue,
-            };
-            frame.insert(pname, (arg.clone(), false));
+            if let Some(name) = param.name() {
+                frame.insert(name.0.clone().into_boxed_str(), (arg.clone(), false));
+            }
         }
         // a pack is sugar for the array that holds the arguments that were left
-        if let Some(Param::Pack((name, _), _)) =
-            params.iter().find(|p| matches!(p, Param::Pack(..)))
+        if let Some(TypeFnParam::Var(_, Some((name, _)))) =
+            params.iter().find(|p| matches!(p, TypeFnParam::Var(..)))
         {
             let left = args.iter().skip(fixed).map(|v| v.to_type()).collect();
             frame.insert(
                 name.clone().into_boxed_str(),
                 (tv!(Type::TypeTuple(left, None)), false),
             );
-        }
-        // a bare `...` is the same pack, read by position
-        if params.iter().any(|p| matches!(p, Param::Var(..))) {
+        } else if params.iter().any(|p| matches!(p, TypeFnParam::Var(..))) {
             let left = args.iter().skip(fixed).map(|v| v.to_type()).collect();
             frame.insert("...".into(), (tv!(Type::TypeTuple(left, None)), false));
         }
         self.frames.push(frame.clone());
         for (param, arg) in params.iter().zip(args.iter()) {
-            if let Param::Typed((n, _), t) = param {
-                let bound = self.eval_type(t);
-                if !bound.to_type().accepts(&arg.to_type()) {
-                    self.frames.pop();
-                    self.err(
-                        fn_name,
-                        format!("argument {n} has invalid type, expected {t}"),
-                        span,
-                    );
-                    return None;
+            let verdict = match param {
+                TypeFnParam::Kinded(_, kind) => kind_accepts(kind, arg),
+                TypeFnParam::Typed(_, t) => {
+                    let kind = self.eval_kind(t);
+                    kind_accepts(&kind, arg)
                 }
+                _ => Ok(()),
+            };
+            if let Err(msg) = verdict {
+                let name = param.name().map(|n| n.0.as_str()).unwrap_or("...");
+                self.frames.pop();
+                self.err(
+                    fn_name,
+                    format!("argument {name} has invalid kind, {msg}"),
+                    span,
+                );
+                return None;
             }
         }
         self.frames.pop();
@@ -3406,7 +3517,7 @@ impl<'a> EvalCtx<'a> {
                                 if let Some(fn_def) = self.type_fns.get(id) {
                                     closure!(Box::new(TypeClosure::duka(
                                         key,
-                                        fn_def.body.0.clone(),
+                                        fn_def.params.clone(),
                                         fn_def.body.clone(),
                                         vec![],
                                     )))
@@ -3527,8 +3638,8 @@ impl Visitor for EvalCtx<'_> {
             NodeKind::FunctionDecl(_, _, body, _) => {
                 self.eval_func_annotations(body);
             }
-            NodeKind::TypeFunction(_, body) => {
-                self.eval_func_annotations(body);
+            NodeKind::TypeFunction(_, params, body) => {
+                self.eval_type_fn_annotations(params, body);
             }
             NodeKind::Match(m) => {
                 for clause in m.1.iter() {
@@ -3550,6 +3661,23 @@ impl EvalCtx<'_> {
     fn eval_func_annotations(&mut self, body: &crate::parser::ast::FuncBody) {
         for param in body.0.iter() {
             if let Param::Typed((_, _), ty) = param {
+                self.eval_type(ty);
+            }
+        }
+        if let Some(ty) = &body.2 {
+            for t in ty.tys.iter() {
+                self.eval_type(t);
+            }
+        }
+    }
+
+    fn eval_type_fn_annotations(
+        &mut self,
+        params: &[TypeFnParam],
+        body: &crate::parser::ast::FuncBody,
+    ) {
+        for param in params.iter() {
+            if let TypeFnParam::Typed((_, _), ty) = param {
                 self.eval_type(ty);
             }
         }
@@ -3684,14 +3812,15 @@ fn negate_constraint(c: &Constraint) -> Option<Constraint> {
 /// call site, so it is dropped rather than left to be read as some parameter.
 type RenameMap = Vec<(Box<str>, Option<Box<str>>)>;
 
-fn rename_map(params: &[Param], args: &[TypeValue]) -> RenameMap {
+fn rename_map(params: &[TypeFnParam], args: &[TypeValue]) -> RenameMap {
     params
         .iter()
         .enumerate()
         .filter_map(|(i, p)| {
             let name = match p {
-                Param::Typed((n, _), _) | Param::Name((n, _)) => n.clone().into_boxed_str(),
-                Param::Var(..) | Param::Pack(..) => return None,
+                TypeFnParam::Typed((n, _), _) => n.clone().into_boxed_str(),
+                TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) => n.0.clone().into_boxed_str(),
+                TypeFnParam::Var(..) => return None,
             };
             let to = match args.get(i).map(|v| v.to_type()) {
                 Some(Type::Param(m)) => Some(m),

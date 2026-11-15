@@ -166,7 +166,7 @@ fn declaration(meta: &MetaInfo) -> Option<String> {
             // a declaration takes no value: there would be nothing to do with one
             format!("{attrs_str}@const local {}: {ty}", writable(meta.name)?)
         }
-        MetaItemInfo::TypeFunction { param_count } => {
+        MetaItemInfo::Type { param_count } => {
             let params = vec!["type"; *param_count].join(", ");
             format!(
                 "{attrs_str}type function {}({params})",

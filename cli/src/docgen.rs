@@ -1,14 +1,31 @@
 use std::path::PathBuf;
 
-use duka_lib::builtin;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_shared::attributes::ATTRIBUTES;
 use duka_lib::duka_shared::docs::{
     KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
 };
+use duka_lib::{builtin, kao};
 use duka_printer::elements::{Book, Chapter, Content, Element, Inline, Link, List, Table};
 use duka_printer::prelude::*;
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
+
+pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool) -> Result<()> {
+    if builtin {
+        return gen_doc(output);
+    }
+
+    let from = from.unwrap_or_default();
+    let output = output.unwrap_or("./docs/".into());
+    let project = kao::find_kao(&from).map_err(|msg| {
+        miette!("Cannot find targets to generate documents")
+            .context(format!("{msg} for path {}", from.display()))
+    })?;
+
+    let manifest = project.manifest();
+
+    Ok(())
+}
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     let mut metas = builtin::all_builtin_metas();
@@ -245,7 +262,7 @@ fn build_title(meta: &MetaInfo) -> Content {
         }
         MetaItemInfo::Constant { ty, .. } => text(format!("Constant `{}`: {ty}", meta.name)),
         MetaItemInfo::Static { inner } => text(format!("Static `{}`({})", meta.name, inner.name)),
-        MetaItemInfo::TypeFunction { param_count } => text(format!(
+        MetaItemInfo::Type { param_count } => text(format!(
             "type function `{}`({})",
             meta.name,
             (0..*param_count)

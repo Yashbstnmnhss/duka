@@ -7,8 +7,10 @@ use duka_shared::regex;
 use duka_shared::value::ConstValue;
 use std::sync::{LazyLock, RwLock};
 
+use crate::analyzer::builtin::arg::{TypeResult, plain};
 use crate::analyzer::tyval::{TypeValue, TypeValueExt};
 
+pub mod arg;
 mod patterns;
 
 #[inline]
@@ -31,13 +33,7 @@ fn obligation(t: &Type) -> Option<Type> {
         .filter(|_| matches!(t, Type::Literal(ConstValue::Bool(_))))
 }
 
-pub type TypeResult = Result<(TypeValue, Vec<Constraint>), String>;
 pub type TypeFunctionBuiltin = fn(Box<[TypeValue]>) -> TypeResult;
-
-#[inline(always)]
-pub(crate) fn plain(value: TypeValue) -> TypeResult {
-    Ok((value, Vec::new()))
-}
 
 #[inline]
 pub fn builtin_value(name: &str) -> Option<TypeValue> {

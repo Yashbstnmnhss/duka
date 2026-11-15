@@ -1,10 +1,10 @@
 use super::AnalyzerData;
 use crate::analyzer::{VisitMut, Visitor, VisitorMut};
 use crate::parser::ast::{
-    BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring, DukaChunk, Expr,
-    Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind,
-    ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm, PatternFieldTerm,
-    PatternOp, PatternTerm, Stmt, TypeDesc, get_attr, has_attr,
+    AttrTypedName, BangDoNode, Block, DestructingTableTerm, DestructingTerm, Destructuring,
+    DukaChunk, Expr, Field, FuncBody, If, IfClause, Linq, LinqClause, Match, MatchClause, Name,
+    Node, NodeKind, ObjectDef, ObjectProperty, Param, Path, PathSuffix, PatternArrayTerm,
+    PatternFieldTerm, PatternOp, PatternTerm, Stmt, TypeDesc, get_attr, has_attr,
 };
 use duka_shared::constants::{MetaMethod, catt};
 use duka_shared::dtype::Type;
@@ -2552,18 +2552,25 @@ impl ExportDesugarer {
     }
 
     fn ensure_init(exports: Name, span: Span) -> Stmt {
-        let target = Path::Base(exports);
+        let target = Path::Base(exports.clone());
         let cond = Node(
-            NodeKind::Unary(boxed!(access!(boxed!(target.clone()), span)), UnOp::Not),
+            NodeKind::Unary(boxed!(access!(boxed!(target), span)), UnOp::Not),
             span,
         );
-        let block = Block(
-            [assign!(
-                { target } = { Node(NodeKind::Table([].into()), span) },
-                span
-            )]
-            .into(),
+        // The table is a global on purpose: an `export` inside a nested block
+        // has to reach the same one, and the name must not become a fresh local
+        // wherever the assignment happens to be written.
+        let name: AttrTypedName = ((exports, Box::from([]), None), span);
+        let decl = Node(
+            NodeKind::Define(
+                [name].into(),
+                [Node(NodeKind::Table(Box::from([])), span)].into(),
+                true,
+                false,
+            ),
+            span,
         );
+        let block = Block([decl].into());
         Node(
             NodeKind::If(If(
                 IfClause(Box::new(block), Box::new(cond)),

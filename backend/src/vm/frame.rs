@@ -1,5 +1,5 @@
 use duka_gc::Gc;
-use duka_gc::{Finalize, Trace, Tracer};
+use duka_gc::{Trace, Tracer};
 
 use crate::value::{DukaClosure, RuntimeValue};
 
@@ -75,10 +75,6 @@ impl CallFrame {
     }
 }
 
-impl Finalize for CallFrame {
-    fn finalize(&self) {}
-}
-
 impl Trace for CallFrame {
     fn trace(&self, tracer: &mut Tracer) {
         self.proto.trace(tracer);
@@ -86,10 +82,6 @@ impl Trace for CallFrame {
             v.trace(tracer);
         }
     }
-}
-
-impl Finalize for CallProto {
-    fn finalize(&self) {}
 }
 
 impl Trace for CallProto {

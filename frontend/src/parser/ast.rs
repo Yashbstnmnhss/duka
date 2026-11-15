@@ -10,7 +10,7 @@ use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
 use crate::lexer::token::{Token, TokenKind};
 use duka_shared::{
     constants::{catt, ccallish, cpar},
-    dtype::{FunctionType, Type, self_marker},
+    dtype::{FunctionType, Kind, KindShape, NoExt, Type, self_marker},
     effects::EffectSet,
     errors::Span,
     types::{BinOp, LogicDatabase, LogicOp, Pipeline, SourceInfo, Spanned, SysCall, UnOp},
@@ -235,7 +235,11 @@ pub enum NodeKind {
     ///     return a | b
     /// end
     /// ```
-    TypeFunction(#[nonvisiting] AttrName, #[nonvisiting] Box<FuncBody>),
+    TypeFunction(
+        #[nonvisiting] AttrName,
+        #[nonvisiting] Box<[TypeFnParam]>,
+        #[nonvisiting] Box<FuncBody>,
+    ),
     #[tag(stmt_only)]
     #[tag(typesys)]
     ///```ts
@@ -243,7 +247,7 @@ pub enum NodeKind {
     /// ```
     InlineTypeFunction(
         #[nonvisiting] AttrName,
-        #[nonvisiting] Box<[Param]>,
+        #[nonvisiting] Box<[TypeFnParam]>,
         #[nonvisiting] Box<TypeDesc>,
     ),
 }
@@ -711,6 +715,43 @@ pub enum Param {
     Typed(Name, TypeDesc),
 }
 
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum TypeFnParam {
+    Name(Name),
+    Kinded(Name, Kind<NoExt>),
+    Typed(Name, TypeDesc),
+    Var(Span, Option<Name>),
+}
+
+impl TypeFnParam {
+    pub fn name(&self) -> Option<&Name> {
+        match self {
+            TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) | TypeFnParam::Typed(n, _) => Some(n),
+            TypeFnParam::Var(_, Some(n)) => Some(n),
+            TypeFnParam::Var(_, None) => None,
+        }
+    }
+
+    pub fn lower(name: Name, desc: TypeDesc) -> Self {
+        let lowered: Option<Kind<NoExt>> = match &desc {
+            TypeDesc::Pure(ty) => Some(Kind::OfType(ty.clone())),
+            TypeDesc::AnyType(_) => Some(Kind::AnyType),
+            TypeDesc::ShapeType(shape, args, _) if args.is_empty() => {
+                Some(Kind::Shape(*shape, [].into()))
+            }
+            TypeDesc::ConstLit(bound, _) => bound.as_deref().and_then(|b| match b {
+                TypeDesc::Pure(ty) => Some(Kind::LiteralType(ty.clone())),
+                _ => None,
+            }),
+            _ => None,
+        };
+        match lowered {
+            Some(kind) => TypeFnParam::Kinded(name, kind),
+            None => TypeFnParam::Typed(name, desc),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
 pub enum PathSuffix {
     /// `path?`
@@ -1065,7 +1106,7 @@ pub enum TypeDesc {
     /// that needed no evaluation into one, which made the same annotation
     /// appear as two different shapes depending on its members.
     Function(Option<FunctionSig>),
-    FnLit(Box<FuncBody>),
+    FnLit(Box<[TypeFnParam]>, Box<FuncBody>),
     /// A general type-level expression. A type position is not a closed
     /// grammar: it is the language the type functions are written in, so an
     /// annotation may compute, branch and call rather than only name a type.
@@ -1082,6 +1123,9 @@ pub enum TypeDesc {
     /// name lookup, which is what lets a function in a table refer to the table
     /// without the alias naming itself.
     SelfType(Span),
+    AnyType(Span),
+    ShapeType(KindShape, Box<[TypeDesc]>, Span),
+    ConstLit(Option<Box<TypeDesc>>, Span),
 }
 
 impl Default for TypeDesc {
@@ -1097,6 +1141,9 @@ impl TypeDesc {
             | TypeDesc::Generic(_, _, span)
             | TypeDesc::TypeOf(_, span)
             | TypeDesc::Splice(_, span)
+            | TypeDesc::AnyType(span)
+            | TypeDesc::ShapeType(.., span)
+            | TypeDesc::ConstLit(.., span)
             | TypeDesc::SelfType(span) => Some(*span),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.span()
@@ -1325,7 +1372,10 @@ impl TypeDesc {
             | TypeDesc::Generic(..)
             | TypeDesc::TypeOf(..)
             | TypeDesc::Expr(_)
-            | TypeDesc::FnLit(_)
+            | TypeDesc::FnLit(..)
+            | TypeDesc::AnyType(_)
+            | TypeDesc::ShapeType(..)
+            | TypeDesc::ConstLit(..)
             | TypeDesc::Splice(..) => Type::Any,
         }
     }
@@ -1355,8 +1405,13 @@ impl TypeDesc {
                 .chain(ft.returns.iter())
                 .any(TypeDesc::contains_self_type),
             TypeDesc::Generic(_, args, _) => args.iter().any(TypeDesc::contains_self_type),
+            TypeDesc::ShapeType(_, args, _) => args.iter().any(TypeDesc::contains_self_type),
+            TypeDesc::ConstLit(inner, _) => {
+                inner.as_deref().is_some_and(TypeDesc::contains_self_type)
+            }
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) => inner.contains_self_type(),
-            TypeDesc::FnLit(_) | TypeDesc::TypeOf(..) | TypeDesc::Expr(_) => false,
+            TypeDesc::FnLit(..) | TypeDesc::TypeOf(..) | TypeDesc::Expr(_) => false,
+            TypeDesc::AnyType(_) => false,
         }
     }
 
@@ -1442,7 +1497,22 @@ impl Display for TypeDesc {
                 Some(ft) => write!(f, "{ft}"),
                 None => write!(f, "function"),
             },
-            TypeDesc::FnLit(_) => write!(f, "type fn"),
+            TypeDesc::FnLit(..) => write!(f, "type fn"),
+            TypeDesc::AnyType(_) => write!(f, "type"),
+            TypeDesc::ShapeType(shape, args, _) if args.is_empty() => {
+                write!(f, "type {}", shape.name())
+            }
+            TypeDesc::ShapeType(shape, args, _) => write!(
+                f,
+                "type {}<{}>",
+                shape.name(),
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeDesc::ConstLit(None, _) => write!(f, "const"),
+            TypeDesc::ConstLit(Some(inner), _) => write!(f, "const {inner}"),
             TypeDesc::NonNil(inner) => write!(f, "{inner}!"),
             TypeDesc::Nilable(inner) => write!(f, "{inner}?"),
             TypeDesc::Rec(inner) => write!(f, "rec {inner}"),
@@ -1490,14 +1560,27 @@ impl Visit for TypeDesc {
                 ft.params.visit(visitor);
                 ft.returns.visit(visitor);
             }
-            TypeDesc::FnLit(body) => body.visit(visitor),
+            TypeDesc::FnLit(params, body) => {
+                for p in params.iter() {
+                    if let TypeFnParam::Typed(_, t) = p {
+                        t.visit(visitor);
+                    }
+                }
+                body.visit(visitor);
+            }
+            TypeDesc::ShapeType(_, args, _) => args.visit(visitor),
+            TypeDesc::ConstLit(Some(inner), _) => inner.visit(visitor),
             TypeDesc::Expr(expr) => expr.visit(visitor),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.visit(visitor)
             }
             // `Pure` is a `Type` and `Array(None)` is an array of nothing: both
             // hold no type to reach.
-            TypeDesc::Pure(_) | TypeDesc::Array(None) | TypeDesc::SelfType(_) => {}
+            TypeDesc::Pure(_)
+            | TypeDesc::Array(None)
+            | TypeDesc::SelfType(_)
+            | TypeDesc::AnyType(_)
+            | TypeDesc::ConstLit(None, _) => {}
         }
     }
 }
@@ -1529,12 +1612,25 @@ impl VisitMut for TypeDesc {
                 ft.params.visit_mut(visitor);
                 ft.returns.visit_mut(visitor);
             }
-            TypeDesc::FnLit(body) => body.visit_mut(visitor),
+            TypeDesc::FnLit(params, body) => {
+                for p in params.iter_mut() {
+                    if let TypeFnParam::Typed(_, t) = p {
+                        t.visit_mut(visitor);
+                    }
+                }
+                body.visit_mut(visitor);
+            }
+            TypeDesc::ShapeType(_, args, _) => args.visit_mut(visitor),
+            TypeDesc::ConstLit(Some(inner), _) => inner.visit_mut(visitor),
             TypeDesc::Expr(expr) => expr.visit_mut(visitor),
             TypeDesc::NonNil(inner) | TypeDesc::Nilable(inner) | TypeDesc::Rec(inner) => {
                 inner.visit_mut(visitor)
             }
-            TypeDesc::Pure(_) | TypeDesc::Array(None) | TypeDesc::SelfType(_) => {}
+            TypeDesc::Pure(_)
+            | TypeDesc::Array(None)
+            | TypeDesc::SelfType(_)
+            | TypeDesc::AnyType(_)
+            | TypeDesc::ConstLit(None, _) => {}
         }
     }
 }
