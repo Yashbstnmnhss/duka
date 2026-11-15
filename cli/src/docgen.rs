@@ -16,13 +16,13 @@ pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool
     }
 
     let from = from.unwrap_or_default();
-    let output = output.unwrap_or("./docs/".into());
+    let _output = output.unwrap_or("./docs/".into());
     let project = kao::find_kao(&from).map_err(|msg| {
         miette!("Cannot find targets to generate documents")
             .context(format!("{msg} for path {}", from.display()))
     })?;
 
-    let manifest = project.manifest();
+    let _manifest = project.manifest();
 
     Ok(())
 }

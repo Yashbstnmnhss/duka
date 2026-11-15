@@ -455,7 +455,7 @@ fn declare_module_types(types: &mut Writer, metas: &[MetaInfo]) {
 
 pub fn locate(path: &str) -> Option<(Url, u32)> {
     generated()
-        .into_iter()
+        .iter()
         .find_map(|file| Some((file.uri(), file.line_of(path)?)))
 }
 #[cfg(test)]

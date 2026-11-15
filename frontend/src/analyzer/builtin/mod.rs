@@ -329,7 +329,7 @@ fn effects_of(v: &TypeValue) -> Result<Option<EffectSet>, String> {
         let Type::Literal(ConstValue::Bool(on)) = &**value else {
             return Err(format!(
                 "the effect `{text}` wants a bool, got {}",
-                &**value
+                **value
             ));
         };
         if *on {

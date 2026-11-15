@@ -1860,7 +1860,7 @@ impl CoState {
                 }
                 Self_(a, b, c, k) => {
                     let table = match vm!(R(b)) {
-                        Table(t) => Gc::clone(t),
+                        Table(t) => *t,
                         other => {
                             return Err(ExpectedType(ctype::TAB, other.type_name_of()));
                         }

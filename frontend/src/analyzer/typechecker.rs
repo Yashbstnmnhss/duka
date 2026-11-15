@@ -2175,7 +2175,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
                     *t = normalize_generic_names(t, names);
                 }
             }
-            TypeDesc::FnLit(fparams.into(), Box::new(cloned))
+            TypeDesc::FnLit(fparams, Box::new(cloned))
         }
         TypeDesc::NonNil(inner) => {
             TypeDesc::NonNil(Box::new(normalize_generic_names(inner, names)))

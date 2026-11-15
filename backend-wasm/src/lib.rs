@@ -245,6 +245,12 @@ impl DukaRuntime {
     }
 }
 
+impl Default for DukaRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn drain_cell(cell: &Option<OutputCell>) -> String {
     let Some(cell) = cell else {
         return String::new();

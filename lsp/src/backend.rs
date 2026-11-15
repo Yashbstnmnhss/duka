@@ -1024,7 +1024,7 @@ impl Backend {
         {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: convert::lsp_range(&text, class.decl_span),
+                range: convert::lsp_range(text, class.decl_span),
             })));
         }
 
@@ -1053,11 +1053,11 @@ impl Backend {
                 .unwrap_or(class.decl_span);
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: convert::lsp_range(&text, target),
+                range: convert::lsp_range(text, target),
             })));
         }
 
-        if let Some(location) = module_member_definition(analysis, &text, token) {
+        if let Some(location) = module_member_definition(analysis, text, token) {
             return Ok(Some(GotoDefinitionResponse::Scalar(location)));
         }
 
@@ -1069,7 +1069,7 @@ impl Backend {
             if link.name_span == token.1 && here(&link.decl_span) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                     uri: uri.clone(),
-                    range: convert::lsp_range(&text, link.decl_span),
+                    range: convert::lsp_range(text, link.decl_span),
                 })));
             }
         }
@@ -1081,7 +1081,7 @@ impl Backend {
         {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: convert::lsp_range(&text, decl),
+                range: convert::lsp_range(text, decl),
             })));
         }
 
@@ -1091,7 +1091,7 @@ impl Backend {
         {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: convert::lsp_range(&text, *decl),
+                range: convert::lsp_range(text, *decl),
             })));
         }
 
@@ -1101,7 +1101,7 @@ impl Backend {
         {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: convert::lsp_range(&text, sym.span),
+                range: convert::lsp_range(text, sym.span),
             })));
         }
         Ok(None)
@@ -1205,12 +1205,12 @@ impl Backend {
                     })
             })
         {
-            return Ok(Some(convert::to_markup_hover(&text, token, &view.render())));
+            return Ok(Some(convert::to_markup_hover(text, token, &view.render())));
         }
 
         if !matches!(kind, TokenKind::Ident(_)) {
-            return Ok(convert::to_vararg_hover(&text, token)
-                .or_else(|| convert::to_literal_hover(&line_index, &text, token)));
+            return Ok(convert::to_vararg_hover(text, token)
+                .or_else(|| convert::to_literal_hover(line_index, text, token)));
         }
 
         // `self` and `super` are not symbols: inside a class they are the class
@@ -1220,7 +1220,7 @@ impl Backend {
             && let Some((class, _)) = base_class(analysis, pos, name)
         {
             return Ok(Some(convert::to_markup_hover(
-                &text,
+                text,
                 token,
                 &crate::hover::Card::new()
                     .signature(format!("{name}: {}", class.name))
@@ -1232,12 +1232,12 @@ impl Backend {
             object_member(analysis, *span, ident_name(kind).unwrap_or_default())
         {
             return Ok(Some(convert::to_member_hover(
-                &text, token, &container, &detail,
+                text, token, &container, &detail,
             )));
         }
 
         if table_key_at(&analysis.tokens.tokens, idx) {
-            return Ok(convert::to_table_key_hover(&line_index, &text, token));
+            return Ok(convert::to_table_key_hover(line_index, text, token));
         }
 
         if ident_name(kind) == Some(csugar::NEW_FUNC)
@@ -1245,7 +1245,7 @@ impl Backend {
             && base_names_class(analysis, &base)
             && let Some((class, objects)) = class_for_base(analysis, &base)
         {
-            return Ok(Some(new_hover(analysis, &text, token, class, objects)));
+            return Ok(Some(new_hover(analysis, text, token, class, objects)));
         }
 
         if let Some(base) = member_base(analysis, *span) {
@@ -1255,7 +1255,7 @@ impl Backend {
                 "{base}.{}",
                 ident_name(kind).unwrap_or_default()
             )) {
-                return Ok(Some(convert::to_markup_hover(&text, token, &view.render())));
+                return Ok(Some(convert::to_markup_hover(text, token, &view.render())));
             }
             if let Some(container) = path_type(analysis, &base)
                 && let Some((_, detail)) = convert::record_members(&container)
@@ -1268,7 +1268,7 @@ impl Backend {
                     .and_then(|member| module_is_declared(analysis, &base, member))
                     .unwrap_or(false);
                 return Ok(Some(convert::member_hover(
-                    &text, token, &base, &detail, declared,
+                    text, token, &base, &detail, declared,
                 )));
             }
             // an object value carries its type as a class, and a class that came
@@ -1279,7 +1279,7 @@ impl Backend {
                 && let Some((owner, detail)) = member_of_class(objects, class, ident_name(kind))
             {
                 return Ok(Some(convert::to_member_hover(
-                    &text,
+                    text,
                     token,
                     &format!("{base}:{owner}"),
                     &detail,
@@ -1291,7 +1291,7 @@ impl Backend {
             let object = analysis.scope.objects.get(link.owner);
             let method = object.and_then(|o| o.methods.iter().find(|m| m.span == link.decl_span));
             if let (Some(object), Some(method)) = (object, method) {
-                return Ok(Some(convert::to_method_hover(&text, token, object, method)));
+                return Ok(Some(convert::to_method_hover(text, token, object, method)));
             }
             return Ok(None);
         }
@@ -1299,7 +1299,7 @@ impl Backend {
         if let Some(ty) = analysis.scope.type_at_span.get(span) {
             let name = ident_name(kind).unwrap_or_default();
             return Ok(Some(convert::to_markup_hover(
-                &text,
+                text,
                 token,
                 &crate::hover::Card::new()
                     .signature(format!("(type) {name}: {ty}"))
@@ -1326,7 +1326,7 @@ impl Backend {
         if let Some(symbol) = ty
             && let Some(hover) = symbol_hover(
                 analysis,
-                &text,
+                text,
                 token,
                 symbol,
                 name,
@@ -1338,16 +1338,16 @@ impl Backend {
         }
         // a label and a `goto` are neither symbols nor members, so they are
         // described from what the analyser recorded about the pair
-        if let Some(hover) = label_hover(analysis, &text, *span, token) {
+        if let Some(hover) = label_hover(analysis, text, *span, token) {
             return Ok(Some(hover));
         }
 
         if let Some(view) = ident_name(kind).and_then(|name| {
             docs::value_builtin_view(name).or_else(|| docs::type_builtin_view(name))
         }) {
-            return Ok(Some(convert::to_markup_hover(&text, token, &view.render())));
+            return Ok(Some(convert::to_markup_hover(text, token, &view.render())));
         }
-        let mut hover = convert::to_hover(&text, token, ty);
+        let mut hover = convert::to_hover(text, token, ty);
 
         if let Some(note) = &generic_note {
             convert::append_markup(&mut hover, note);
@@ -1725,13 +1725,13 @@ impl Backend {
             .tokens
             .iter()
             .position(|(_, span)| {
-                let range = index.range(&text, *span);
+                let range = index.range(text, *span);
                 pos >= range.start && pos < range.end
             })
             .unwrap_or(analysis.tokens.tokens.len());
 
         if let Some((kind, string_span)) =
-            convert::token_at_indexed(&index, &text, pos, &analysis.tokens.tokens)
+            convert::token_at_indexed(index, text, pos, &analysis.tokens.tokens)
         {
             if matches!(kind, TokenKind::Comment(_)) {
                 return Ok(None);
@@ -1763,7 +1763,7 @@ impl Backend {
             }
         }
 
-        if let Some(AccessBase::Path(base)) = member_access_base(&index, &text, pos) {
+        if let Some(AccessBase::Path(base)) = member_access_base(index, text, pos) {
             // a standard library module has no type to read members off
             let members = docs::value_builtin_members(&base);
             if !members.is_empty() {
@@ -1820,7 +1820,7 @@ impl Backend {
             module,
             members,
             type_position,
-        }) = member_access_base(&index, &text, pos)
+        }) = member_access_base(index, text, pos)
         {
             let items = if type_position {
                 require_type_members(analysis, &module, &members)
@@ -1837,7 +1837,7 @@ impl Backend {
         // library is not one flat list: `print` is a value and `IsSubType` only
         // means anything in a type, so offering both in the same place would be
         // wrong in both.
-        let word = name_at(&text, pos).unwrap_or_default();
+        let word = name_at(text, pos).unwrap_or_default();
         let context = completion_context(&analysis.tokens.tokens, at);
         if context == CompletionContext::Declaration {
             return Ok(Some(CompletionResponse::List(CompletionList {
