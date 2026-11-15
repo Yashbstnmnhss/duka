@@ -5,9 +5,14 @@ use duka_shared::dtype::{Brand, Constraint, Label, Subject, Ty, Type, Units};
 use duka_shared::effects::{EFFECT_ATOMS, Effect, EffectSet};
 use duka_shared::regex;
 use duka_shared::value::ConstValue;
+use std::cell::RefCell;
+use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{LazyLock, RwLock};
 
 use crate::analyzer::builtin::arg::{TypeResult, plain};
+use crate::analyzer::modules::ModuleMap;
+use crate::analyzer::objects::ObjectType;
 use crate::analyzer::tyval::{TypeValue, TypeValueExt};
 
 pub mod arg;
@@ -33,7 +38,98 @@ fn obligation(t: &Type) -> Option<Type> {
         .filter(|_| matches!(t, Type::Literal(ConstValue::Bool(_))))
 }
 
-pub type TypeFunctionBuiltin = fn(Box<[TypeValue]>) -> TypeResult;
+#[derive(Clone, Copy, Debug)]
+pub enum TypeFunctionBuiltin {
+    Plain(fn(Box<[TypeValue]>) -> TypeResult),
+    Env(fn(&mut TypeEvalContext<'_>, Box<[TypeValue]>) -> TypeResult),
+}
+
+impl TypeFunctionBuiltin {
+    pub fn call(self, env: &mut TypeEvalContext<'_>, args: Box<[TypeValue]>) -> TypeResult {
+        match self {
+            Self::Plain(f) => f(args),
+            Self::Env(f) => f(env, args),
+        }
+    }
+}
+
+/// The evaluator, as a Rust type function sees it.
+pub struct TypeEvalContext<'a> {
+    /// What the calls that produced this call's arguments contributed.
+    pub contributed: &'a Rc<RefCell<Vec<Constraint>>>,
+    /// What this call promises, on top of its value.
+    pub provided: &'a mut Vec<Constraint>,
+    /// Where each argument started in `contributed`.
+    pub marks: Option<&'a [Range<usize>]>,
+    objects: &'a [ObjectType],
+    modules: Option<&'a ModuleMap>,
+}
+
+impl<'a> TypeEvalContext<'a> {
+    pub fn new(
+        contributed: &'a Rc<RefCell<Vec<Constraint>>>,
+        provided: &'a mut Vec<Constraint>,
+        marks: Option<&'a [Range<usize>]>,
+        objects: &'a [ObjectType],
+        modules: Option<&'a ModuleMap>,
+    ) -> Self {
+        Self {
+            contributed,
+            provided,
+            marks,
+            objects,
+            modules,
+        }
+    }
+
+    /// Whether a class type has a member of this name, walking its bases.
+    ///
+    /// A class names its members by id rather than by what it declares, so the
+    /// question needs the table the id indexes; a type function handed types
+    /// alone could only answer `never` about every class.
+    pub fn has_member(&self, t: &Type, name: &[u8]) -> bool {
+        match t {
+            Type::Rec(inner) => self.has_member(inner, name),
+            Type::Object { id, module, .. } => {
+                let table = match module {
+                    None => self.objects,
+                    Some(key) => match self.modules.and_then(|m| m.get(key.as_ref())) {
+                        Some(module) => &module.analysis.objects,
+                        None => return false,
+                    },
+                };
+                let mut cur = Some(*id);
+                while let Some(i) = cur {
+                    let Some(o) = table.get(i) else {
+                        return false;
+                    };
+                    if o.members.iter().any(|m| m.name.as_bytes() == name)
+                        || o.methods.iter().any(|m| m.name.as_bytes() == name)
+                    {
+                        return true;
+                    }
+                    cur = o.base;
+                }
+                false
+            }
+            Type::TypeTable(..) => std::str::from_utf8(name).is_ok_and(|n| t.field(n).is_some()),
+            // a table holds whatever was put in it, and a variable is not decided
+            Type::Table(..) | Type::Param(_) | Type::Any => true,
+            Type::Union(us) => us.iter().any(|m| self.has_member(m, name)),
+            _ => false,
+        }
+    }
+
+    /// The constraint tail a call's arguments contributed since `start`.
+    pub fn take_contributed(&self, start: usize) -> Vec<Constraint> {
+        let mut c = self.contributed.borrow_mut();
+        if start <= c.len() {
+            c.drain(start..).collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 #[inline]
 pub fn builtin_value(name: &str) -> Option<TypeValue> {
@@ -327,10 +423,7 @@ fn effects_of(v: &TypeValue) -> Result<Option<EffectSet>, String> {
             return Err(format!("`{text}` is not an effect name"));
         };
         let Type::Literal(ConstValue::Bool(on)) = &**value else {
-            return Err(format!(
-                "the effect `{text}` wants a bool, got {}",
-                **value
-            ));
+            return Err(format!("the effect `{text}` wants a bool, got {}", **value));
         };
         if *on {
             let _ = set.with(atom);
@@ -386,7 +479,7 @@ duka_builtin_type_def! {
             plain(value)
         },
 
-        #[duka_builtin(doc = "Stringify a type", count = 1)]
+        #[duka_builtin(doc = "Stringify a type", params(T: type))]
         fn Stringify(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 Type::Literal(ConstValue::String(
@@ -448,7 +541,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Whether B is a sub type of A", count = 2)]
+        #[duka_builtin(doc = "Whether B is a sub type of A", params(A: type, B: type))]
         fn IsSubType(v: Box<[TypeValue]>) -> TypeResult {
             let constraints = vec![Constraint::Sub(Subject::Arg(1), v[1].to_type())];
             Ok((
@@ -457,13 +550,13 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "A type with nil taken out of it", count = 1)]
+        #[duka_builtin(doc = "A type with nil taken out of it", params(T: type))]
         fn NonNil(v: Box<[TypeValue]>) -> TypeResult {
             let constraints = vec![Constraint::IsNot(Subject::Arg(0), Type::Nil)];
             Ok((tv!(v[0].to_type().nonnilable()), constraints))
         },
 
-        #[duka_builtin(doc = "Get the super type of a type value in type context", count = 1)]
+        #[duka_builtin(doc = "Get the super type of a type value in type context", params(T: type))]
         fn Super(v: Box<[TypeValue]>) -> TypeResult {
             let ty = v.into_iter().next().expect("Checked");
             plain(tv!(match ty.to_type() {
@@ -475,7 +568,7 @@ duka_builtin_type_def! {
             }))
         },
 
-        #[duka_builtin(doc = "Whether A is in B", count = 2)]
+        #[duka_builtin(doc = "Whether A is in B", params(A: type, B: type))]
         fn In(v: Box<[TypeValue]>) -> TypeResult {
             if let Some(other) = &v[0].as_type() {
                 if let Some(Type::Union(types)) = &v[1].as_type()  {
@@ -493,7 +586,7 @@ duka_builtin_type_def! {
             plain(tv!(Type::Literal(ConstValue::Bool(false))))
         },
 
-        #[duka_builtin(doc = "Whether the function type has var-arg parameter", count = 1, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Whether the function type has var-arg parameter", params(F: function))]
         fn HasVarArg(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
                 Type::Literal(ConstValue::Bool(ft.var_arg))
@@ -502,7 +595,7 @@ duka_builtin_type_def! {
             }))
         },
 
-        #[duka_builtin(doc = "Whether the function type has var-arg returns", count = 1, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Whether the function type has var-arg returns", params(F: function))]
         fn HasRetVarArg(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(if let Some(Type::Function(Some(ft))) = &v[0].as_type() {
                 Type::Literal(ConstValue::Bool(ft.return_var_arg.is_some()))
@@ -511,7 +604,7 @@ duka_builtin_type_def! {
             }))
         },
 
-        #[duka_builtin(doc = "Build a function type", count = 4)]
+        #[duka_builtin(doc = "Build a function type", params(args: type, var_arg: const Type::Bool, rets: type, var_ret: const Type::Bool))]
         fn BuildFunction(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let args = v.next().expect("Checked");
@@ -543,7 +636,7 @@ duka_builtin_type_def! {
             )
         },
 
-        #[duka_builtin(doc = "Remove B in union or type array A", count = 2)]
+        #[duka_builtin(doc = "Remove B in union or type array A", params(A: type, B: type))]
         fn Exclude(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked");
@@ -564,7 +657,7 @@ duka_builtin_type_def! {
             plain(first)
         },
 
-        #[duka_builtin(doc = "Return true if literal string type A ends with B", count = 2)]
+        #[duka_builtin(doc = "Return true if literal string type A ends with B", params(A: const Type::String, B: const Type::String))]
         fn EndsWith(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(end))) = &v[1].as_type() {
@@ -577,7 +670,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Return true if literal string type A starts with B", count = 2)]
+        #[duka_builtin(doc = "Return true if literal string type A starts with B", params(A: const Type::String, B: const Type::String))]
         fn StartsWith(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(tar))) = &v[0].as_type() && let Some(Type::Literal(ConstValue::String(start))) = &v[1].as_type() {
@@ -590,7 +683,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Remove an element in type tuple or type table by its index or key", count = 2)]
+        #[duka_builtin(doc = "Remove an element in type tuple or type table by its index or key", params(A: type, B: type))]
         fn Remove(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked").without_tag();
@@ -620,7 +713,7 @@ duka_builtin_type_def! {
             })
         },
 
-        #[duka_builtin(doc = "Insert new element to the head of a type tuple or type table", count = 2)]
+        #[duka_builtin(doc = "Insert new element to the head of a type tuple or type table", params(A: type, B: type))]
         fn AppendHead(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked").without_tag();
@@ -641,7 +734,7 @@ duka_builtin_type_def! {
             })
         },
 
-        #[duka_builtin(doc = "Append new element to type tuple or type table", count = 2)]
+        #[duka_builtin(doc = "Append new element to type tuple or type table", params(A: type, B: type))]
         fn Append(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked").without_tag();
@@ -696,7 +789,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Convert a string literal type into uppercase", count = 1)]
+        #[duka_builtin(doc = "Convert a string literal type into uppercase", params(T: const Type::String))]
         fn Uppercase(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
@@ -709,7 +802,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Capitalize a string literal type", count = 1)]
+        #[duka_builtin(doc = "Capitalize a string literal type", params(T: const Type::String))]
         fn Capitalize(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
@@ -722,7 +815,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Uncapitalize a string literal type", count = 1)]
+        #[duka_builtin(doc = "Uncapitalize a string literal type", params(T: const Type::String))]
         fn Uncapitalize(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
@@ -735,7 +828,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Convert a string literal type into lowercase", count = 1)]
+        #[duka_builtin(doc = "Convert a string literal type into lowercase", params(T: const Type::String))]
         fn Lowercase(v: Box<[TypeValue]>) -> TypeResult {
             plain(tv!(
                 if let Some(Type::Literal(ConstValue::String(str))) = &v[0].as_type() {
@@ -748,7 +841,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Search a RegEx pattern in a string literal type", count = 2)]
+        #[duka_builtin(doc = "Search a RegEx pattern in a string literal type", params(A: const Type::String, B: const Type::String))]
         fn Regex(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked");
@@ -789,8 +882,8 @@ duka_builtin_type_def! {
             Ok((tv!(value), constraints))
         },
 
-        #[duka_builtin(doc = "Narrow A when A has a member called B", count = 2)]
-        fn Has(v: Box<[TypeValue]>) -> TypeResult {
+        #[duka_builtin(doc = "Narrow A when A has a member called B", params(A: type, B: type), env)]
+        fn Has(__env: &mut TypeEvalContext<'_>, v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let first = v.next().expect("Checked").to_type();
             let second = v.next().expect("Checked").to_type();
@@ -798,7 +891,16 @@ duka_builtin_type_def! {
                 return plain(tv!(Type::Any));
             };
             let name = get_str(&name)?;
-            let value = if first.field(name).is_some() {
+            // A class names its members by id rather than by what it declares,
+            // so the question is answered off the class table when the type is
+            // one; everything else is answered by the type itself.
+            let value = if matches!(first, Type::Object { .. } | Type::Union(_) | Type::Rec(_)) {
+                if __env.has_member(&first, name.as_bytes()) {
+                    first
+                } else {
+                    Type::Never
+                }
+            } else if first.field(name).is_some() {
                 first
             } else if matches!(first, Type::Table(..) | Type::Param(_) | Type::Any) {
                 // a table holds whatever was put in it, and a variable is not
@@ -813,8 +915,11 @@ duka_builtin_type_def! {
             Ok((tv!(value), constraints))
         },
 
-        #[duka_builtin(doc = "A if it answers, otherwise B -- one of the two, whichever answers", count = 2)]
-        fn Any(v: Box<[TypeValue]>) -> TypeResult {
+        #[duka_builtin(doc = "A if it answers, otherwise B -- one of the two, whichever answers", params(A: type, B: type), env)]
+        fn Any(__env: &mut TypeEvalContext<'_>, v: Box<[TypeValue]>) -> TypeResult {
+            if let Some(marks) = __env.marks {
+                crate::analyzer::eval::compose_contributions(__env.contributed, "Any", &v, marks);
+            }
             let mut v = v.into_iter();
             let a = v.next().expect("Checked").to_type();
             let b = v.next().expect("Checked").to_type();
@@ -834,8 +939,11 @@ duka_builtin_type_def! {
             }))
         },
 
-        #[duka_builtin(doc = "Narrow A when both answer -- either side may be the one that narrowed", count = 2)]
-        fn All(v: Box<[TypeValue]>) -> TypeResult {
+        #[duka_builtin(doc = "Narrow A when both answer -- either side may be the one that narrowed", params(A: type, B: type), env)]
+        fn All(__env: &mut TypeEvalContext<'_>, v: Box<[TypeValue]>) -> TypeResult {
+            if let Some(marks) = __env.marks {
+                crate::analyzer::eval::compose_contributions(__env.contributed, "All", &v, marks);
+            }
             let mut v = v.into_iter();
             let a = v.next().expect("Checked").to_type();
             let b = v.next().expect("Checked").to_type();
@@ -854,13 +962,29 @@ duka_builtin_type_def! {
             plain(tv!(Type::Literal(ConstValue::Bool(matches!(v.into_iter().next().expect("Checked").to_type(), Type::TypeTuple(..))))))
         },
 
-        #[duka_builtin(doc = "Hand a type back while keeping the constraints its evaluation contributed", count = 1)]
-        fn provide(v: Box<[TypeValue]>) -> TypeResult {
-            plain(v.into_iter().next().expect("Checked"))
+        #[duka_builtin(doc = "Hand a type back while keeping the constraints its evaluation contributed", params(A: type), env)]
+        fn provide(__env: &mut TypeEvalContext<'_>, v: Box<[TypeValue]>) -> TypeResult {
+            if v.len() != 1 {
+                return Err("provide expects exactly one argument".to_owned());
+            }
+            // The argument was evaluated before the call, so what it promised is
+            // the tail of the contribution list. Hand it back as the value this
+            // call denotes: a claim, not a type. Taking it out of the list is
+            // what makes `provide` more than a marker -- the enclosing
+            // combinator no longer sees it and cannot drop it.
+            let constraints = match __env.marks.and_then(|m| m.first()).map(|r| r.start) {
+                Some(start) => __env.take_contributed(start),
+                None => vec![],
+            };
+            __env.provided.extend(constraints.iter().cloned());
+            Ok((v.into_iter().next().expect("Checked"), constraints))
         },
 
-        #[duka_builtin(doc = "Narrow A when C does not answer -- impossible once C does", count = 2)]
-        fn Not(v: Box<[TypeValue]>) -> TypeResult {
+        #[duka_builtin(doc = "Narrow A when C does not answer -- impossible once C does", params(A: type, C: type), env)]
+        fn Not(__env: &mut TypeEvalContext<'_>, v: Box<[TypeValue]>) -> TypeResult {
+            if let Some(marks) = __env.marks {
+                crate::analyzer::eval::compose_contributions(__env.contributed, "Not", &v, marks);
+            }
             let mut v = v.into_iter();
             let a = v.next().expect("Checked").to_type();
             let c = v.next().expect("Checked").to_type();
@@ -974,7 +1098,7 @@ duka_builtin_type_def! {
         #[duka_builtin(doc = "The square root of T, halving its exponents", count = 1)]
         fn Sqrt(v: Box<[TypeValue]>) -> TypeResult { sqrt_of(v) },
 
-        #[duka_builtin(doc = "The effects a function type carries, as a table of `true` for held and `false` for denied", flags(@feature(effects)), count = 1, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "The effects a function type carries, as a table of `true` for held and `false` for denied", flags(@feature(effects)), params(F: function))]
         fn GetEffects(v: Box<[TypeValue]>) -> TypeResult {
             let v = v.into_iter().next().expect("Checked");
             plain(tv!(
@@ -985,7 +1109,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Fold an effects table into a function type's own effects", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Fold an effects table into a function type's own effects", flags(@feature(effects)), params(F: function, policy: type))]
         fn MergeEffects(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
@@ -1003,7 +1127,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Give a function type exactly the effects a table describes, nil or an empty table takes them off", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Give a function type exactly the effects a table describes, nil or an empty table takes them off", flags(@feature(effects)), params(F: function, policy: type))]
         fn SetEffects(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
@@ -1019,7 +1143,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Whether a function type has the effects a policy asks for: `true` one it must hold, `false` one it must not hold, one left out is not looked at", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)))]
+        #[duka_builtin(doc = "Whether a function type has the effects a policy asks for: `true` one it must hold, `false` one it must not hold, one left out is not looked at", flags(@feature(effects)), params(F: function, policy: type))]
         fn HasEffects(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
@@ -1035,7 +1159,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Give a function type one effect, taking it off the ones it denies", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)), bind(1: Type::String))]
+        #[duka_builtin(doc = "Give a function type one effect, taking it off the ones it denies", flags(@feature(effects)), params(F: function, effect: string))]
         fn WithEffect(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
@@ -1055,7 +1179,7 @@ duka_builtin_type_def! {
             ))
         },
 
-        #[duka_builtin(doc = "Deny a function type one effect, taking it off the ones it holds", flags(@feature(effects)), count = 2, bind(0: Type::Function(None)), bind(1: Type::String))]
+        #[duka_builtin(doc = "Deny a function type one effect, taking it off the ones it holds", flags(@feature(effects)), params(F: function, effect: string))]
         fn WithoutEffect(v: Box<[TypeValue]>) -> TypeResult {
             let mut v = v.into_iter();
             let f = v.next().expect("Checked");
@@ -1126,6 +1250,9 @@ pub use self::TYPE_MODULE_META as TYPE_BUILTINS_META;
 mod tests {
     use super::*;
     use crate::analyzer::tyval::{TypeClosure, TypeLeaf, tv};
+    use duka_shared::docs::MetaItemInfo;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn apply(name: &str, args: Box<[Type]>) -> Result<Type, String> {
         let value = builtin_value(name).ok_or_else(|| "missing".to_owned())?;
@@ -1140,7 +1267,10 @@ mod tests {
             .map(tv)
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        func(args).map(|(v, _)| v.to_type())
+        let contributed = Rc::new(RefCell::new(Vec::new()));
+        let mut provided = Vec::new();
+        let mut env = TypeEvalContext::new(&contributed, &mut provided, None, &[], None);
+        func.call(&mut env, args).map(|(v, _)| v.to_type())
     }
 
     fn obj() -> Type {
@@ -1152,6 +1282,44 @@ mod tests {
             module: None,
             mt: None,
         }
+    }
+
+    /// A `params(name: kind)` entry is enforced on the way in and reads back
+    /// from the meta table: the declaration is the whole of what a reader sees.
+    #[test]
+    fn a_type_function_checks_its_parameter_kinds() {
+        assert!(
+            apply("HasVarArg", [Type::Function(None)].into()).is_ok(),
+            "a function type is what the parameter asks for"
+        );
+        let why = apply("HasVarArg", [Type::Int].into()).expect_err("an int is not a function");
+        assert!(why.contains("Expected function"), "{why}");
+
+        let MetaItemInfo::Module { inner } = &super::TYPE_MODULE_META.info else {
+            panic!("a type builtin module");
+        };
+        let meta = inner
+            .iter()
+            .find(|m| m.name == "HasVarArg")
+            .expect("HasVarArg is declared");
+        let MetaItemInfo::Type { params } = &meta.info else {
+            panic!("a type function");
+        };
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, "F");
+        assert_eq!(params[0].kind, "function");
+
+        // A function written with `count` still reads back, positionally named.
+        let positional = inner
+            .iter()
+            .find(|m| m.name == "Remove")
+            .expect("Remove is declared");
+        let MetaItemInfo::Type { params } = &positional.info else {
+            panic!("a type function");
+        };
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "A");
+        assert_eq!(params[0].kind, "type");
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use colored::Colorize;
-use duka_lib::kao::{DEFAULT_ENTRY, DEFAULT_MODULES_DIR, DEFAULT_SRC, KAO_FILE};
+use duka_lib::kao::{DEFAULT_ENTRY, DEFAULT_MODULES_DIR, DEFAULT_SRC, DEFAULT_TESTS_DIR, KAO_FILE};
 
 pub fn run_init_cmd(
     path: PathBuf,
@@ -67,7 +67,7 @@ edition = "{edition}"
         println!("{} {}", "created".green().bold(), entry_path.display());
     }
 
-    for dir in [root.join(DEFAULT_MODULES_DIR), root.join("tests")] {
+    for dir in [root.join(DEFAULT_MODULES_DIR), root.join(DEFAULT_TESTS_DIR)] {
         if !dir.exists() {
             if let Err(e) = fs::create_dir_all(&dir) {
                 eprintln!("{}: {}", "error".red().bold(), e);

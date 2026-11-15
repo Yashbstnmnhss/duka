@@ -6,8 +6,8 @@ use syn::{
 };
 
 use crate::attr::{
-    AttrShape, MetaInfoFlags, const_type, for_each_attr_key, lit_str, parse_builtin_type_args,
-    strip_impl_prefix, unwrap_paren,
+    AttrShape, MetaInfoFlags, TypeParamEntry, const_type, for_each_attr_key, lit_str,
+    parse_builtin_type_args, strip_impl_prefix, unwrap_paren,
 };
 
 mod kw {
@@ -18,13 +18,30 @@ mod kw {
     custom_keyword!(flags);
 }
 
+struct ParamSpec {
+    name: String,
+    /// The `Kind` expression the check is generated from; `None` checks nothing.
+    kind: Option<TokenStream>,
+    /// How the kind reads in the language, for the meta table.
+    spelling: String,
+}
+
+/// `A`, `B`, ... for a parameter written without a name of its own.
+fn positional_name(index: usize) -> String {
+    if index < 26 {
+        ((b'A' + index as u8) as char).to_string()
+    } else {
+        format!("A{index}")
+    }
+}
+
 struct TypeFnEntry {
     func: ItemFn,
     name: String,
     doc: String,
     example: Option<String>,
-    count: usize,
-    binds: Vec<(usize, TokenStream)>,
+    params: Vec<ParamSpec>,
+    env: bool,
     flags: MetaInfoFlags,
 }
 
@@ -72,30 +89,79 @@ impl Parse for TypeFnEntry {
             )
         })?;
         let args = parse_builtin_type_args(tokens)?;
-        let count = args.count.ok_or_else(|| {
-            syn::Error::new_spanned(&func.sig.ident, "type function requires `count`")
-        })?;
-        for b in &args.binds {
-            if b.index >= count {
+        let (params, env) = if !args.params.is_empty() {
+            if args.count.is_some() || !args.binds.is_empty() {
                 return Err(syn::Error::new_spanned(
                     &func.sig.ident,
-                    format!(
-                        "bound index {} is out of range for `count` {}",
-                        b.index, count
-                    ),
+                    "`params` replaces `count` and `bind`; write one or the other",
                 ));
             }
-        }
-        if !func.sig.generics.params.is_empty() {
-            return Err(syn::Error::new_spanned(
-                &func.sig.generics,
-                "type function cannot have generics",
-            ));
-        }
-        if func.sig.inputs.len() != 1 {
+            let params: Vec<ParamSpec> = args
+                .params
+                .into_iter()
+                .map(
+                    |TypeParamEntry {
+                         name,
+                         kind,
+                         spelling,
+                     }| ParamSpec {
+                        name,
+                        kind: Some(kind),
+                        spelling,
+                    },
+                )
+                .collect();
+            (params, args.env)
+        } else {
+            let count = args.count.ok_or_else(|| {
+                syn::Error::new_spanned(&func.sig.ident, "type function requires `params`")
+            })?;
+            let mut binds = args.binds;
+            for b in &binds {
+                if b.index >= count {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.ident,
+                        format!(
+                            "bound index {} is out of range for `count` {}",
+                            b.index, count
+                        ),
+                    ));
+                }
+            }
+            binds.sort_by_key(|b| b.index);
+            let params = (0..count)
+                .map(|i| {
+                    let name = positional_name(i);
+                    match binds.iter().find(|b| b.index == i) {
+                        Some(b) => {
+                            let ty = &b.ty;
+                            ParamSpec {
+                                name,
+                                kind: Some(quote!(::duka_shared::dtype::Kind::OfType(#ty))),
+                                spelling: crate::attr::type_spelling(
+                                    &syn::parse2::<syn::Expr>(ty.clone())
+                                        .unwrap_or_else(|_| syn::parse_quote!(Type::Any)),
+                                ),
+                            }
+                        }
+                        None => ParamSpec {
+                            name,
+                            kind: None,
+                            spelling: "type".to_owned(),
+                        },
+                    }
+                })
+                .collect();
+            (params, args.env)
+        };
+        if func.sig.inputs.len() != if env { 2 } else { 1 } {
             return Err(syn::Error::new_spanned(
                 &func.sig.inputs,
-                "type function takes exactly one `Box<[TypeValue]>` argument",
+                if env {
+                    "an `env` type function takes `&mut TypeEnv` and `Box<[TypeValue]>`"
+                } else {
+                    "type function takes exactly one `Box<[TypeValue]>` argument"
+                },
             ));
         }
         match &func.sig.output {
@@ -125,8 +191,8 @@ impl Parse for TypeFnEntry {
             name,
             doc: args.doc,
             example: args.example,
-            count,
-            binds: args.binds.into_iter().map(|b| (b.index, b.ty)).collect(),
+            params,
+            env,
             flags: args.flags,
         })
     }
@@ -376,26 +442,67 @@ impl BuiltinTypeDef {
         let fn_registers = fns.iter().map(|e| {
             let ident = &e.func.sig.ident;
             let name_lit = LitStr::new(&e.name, ident.span());
-            let count = LitInt::new(&e.count.to_string(), Span::call_site());
-            let binds = e.binds.iter().map(|(index, bound)| {
+            let required = LitInt::new(&e.params.len().to_string(), Span::call_site());
+            let checks = e.params.iter().enumerate().map(|(index, spec)| {
                 let idx = LitInt::new(&index.to_string(), Span::call_site());
-                quote! {
-                    if !(#bound).accepts(&__args[#idx].to_type()) {
-                        return Err(concat!("Expected ", stringify!(#bound), " for the type argument at ", stringify!(#idx)).to_owned());
-                    }
+                let param = LitStr::new(&spec.name, ident.span());
+                let spelling = LitStr::new(&spec.spelling, ident.span());
+                match &spec.kind {
+                    Some(kind) => quote! {
+                        if let Some(__a) = __args.get(#idx)
+                            && let Err(__why) = crate::analyzer::tyval::kind_accepts(&(#kind), __a)
+                        {
+                            return Err(format!(
+                                "Expected {} for the type argument `{}`: {}",
+                                #spelling, #param, __why,
+                            ));
+                        }
+                    },
+                    None => quote! {},
                 }
             });
-            quote! {
-                b = b.register(#name_lit, ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(
-                    Box::new(crate::analyzer::tyval::TypeClosure::rust(#name_lit, |__args| {
-                        if __args.len() < #count {
-                            return Err(concat!("Expected ", stringify!(#count), " type argument").to_owned());
-                        }
-                        #(#binds)*
-                        #ident(__args)
-                    }))
-                )));
-            }
+            let body = if e.env {
+                quote! {
+                    b = b.register(
+                        #name_lit,
+                        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(
+                            Box::new(crate::analyzer::tyval::TypeClosure::rust(
+                                #name_lit,
+                                crate::analyzer::builtin::TypeFunctionBuiltin::Env(
+                                    |__env, __args| {
+                                        if __args.len() < #required {
+                                            return Err(concat!("Expected ", stringify!(#required), " type argument").to_owned());
+                                        }
+                                        #(#checks)*
+                                        #ident(__env, __args)
+                                    },
+                                ),
+                            )),
+                        )),
+                    );
+                }
+            } else {
+                quote! {
+                    b = b.register(
+                        #name_lit,
+                        ::duka_shared::dtype::Ty::Ext(crate::analyzer::tyval::TypeLeaf::Closure(
+                            Box::new(crate::analyzer::tyval::TypeClosure::rust(
+                                #name_lit,
+                                crate::analyzer::builtin::TypeFunctionBuiltin::Plain(
+                                    |__args| {
+                                        if __args.len() < #required {
+                                            return Err(concat!("Expected ", stringify!(#required), " type argument").to_owned());
+                                        }
+                                        #(#checks)*
+                                        #ident(__args)
+                                    },
+                                ),
+                            )),
+                        )),
+                    );
+                }
+            };
+            body
         });
 
         let const_registers = consts.iter().map(|e| {
@@ -422,7 +529,16 @@ impl BuiltinTypeDef {
                 .as_ref()
                 .map(|i| quote! { Some(#i) })
                 .unwrap_or(quote! { None });
-            let count = LitInt::new(&e.count.to_string(), Span::call_site());
+            let param_entries = e.params.iter().map(|p| {
+                let name_lit = LitStr::new(&p.name, Span::call_site());
+                let kind_lit = LitStr::new(&p.spelling, Span::call_site());
+                quote! {
+                    ::duka_shared::docs::TypeParamMeta {
+                        name: #name_lit,
+                        kind: #kind_lit,
+                    }
+                }
+            });
             let flags = e.flags.clone().into_tokens();
             quote! {
                 ::duka_shared::docs::MetaInfo {
@@ -430,7 +546,7 @@ impl BuiltinTypeDef {
                     doc: #doc_lit,
                     example: #ex,
                     info: ::duka_shared::docs::MetaItemInfo::Type {
-                        param_count: #count
+                        params: &[#(#param_entries),*]
                     },
                     flags: #flags,
                 }

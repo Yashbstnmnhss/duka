@@ -412,7 +412,8 @@ mod tests {
             vec![(
                 ConstValue::String(b"__mul".to_vec().into_boxed_slice()),
                 Box::new(Ty::Ext(TypeLeaf::Closure(Box::new(TypeClosure::rust(
-                    "MulUnit", unit_mul,
+                    "MulUnit",
+                    crate::analyzer::builtin::TypeFunctionBuiltin::Plain(unit_mul),
                 ))))),
             )],
             None,

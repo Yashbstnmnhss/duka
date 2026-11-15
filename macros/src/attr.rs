@@ -1659,6 +1659,9 @@ pub(crate) struct BuiltinTypeArgs {
     pub example: Option<String>,
     pub count: Option<usize>,
     pub binds: Vec<BindEntry>,
+    pub params: Vec<TypeParamEntry>,
+    /// The function takes the evaluator's context as its first argument.
+    pub env: bool,
     pub flags: MetaInfoFlags,
 }
 #[derive(Clone)]
@@ -1676,6 +1679,142 @@ impl Parse for BindEntry {
             ty,
         })
     }
+}
+
+/// One `name: kind` of a type function's `params(...)`.
+///
+/// The kind is written the way the language writes it: `type`, `type array`,
+/// `const int`, or a type. The Rust expression behind it is what the generated
+/// check evaluates; the spelling is what a reader sees.
+pub(crate) struct TypeParamEntry {
+    pub name: String,
+    pub kind: TokenStream,
+    pub spelling: String,
+}
+
+impl Parse for TypeParamEntry {
+    fn parse(input: syn::parse::ParseStream) -> Result<Self> {
+        let name: Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let (kind, spelling) = if input.peek(Token![const]) {
+            input.parse::<Token![const]>()?;
+            if input.is_empty() {
+                (
+                    quote! { ::duka_shared::dtype::Kind::LiteralType(::duka_shared::dtype::Type::Any) },
+                    "const".to_owned(),
+                )
+            } else {
+                let ty: syn::Expr = input.parse()?;
+                (
+                    quote! { ::duka_shared::dtype::Kind::LiteralType(#ty) },
+                    format!("const {}", type_spelling(&ty)),
+                )
+            }
+        } else if input.peek(Token![type]) {
+            input.parse::<Token![type]>()?;
+            if input.is_empty() {
+                (
+                    quote! { ::duka_shared::dtype::Kind::AnyType },
+                    "type".to_owned(),
+                )
+            } else {
+                let shape: Ident = input.parse()?;
+                let (variant, text) = match shape.to_string().as_str() {
+                    "object" => (quote! { Object }, "object"),
+                    "array" | "list" => (quote! { Array }, "array"),
+                    "table" => (quote! { Table }, "table"),
+                    "record" => (quote! { Record }, "record"),
+                    "tuple" => (quote! { Tuple }, "tuple"),
+                    "union" => (quote! { Union }, "union"),
+                    "pattern" => (quote! { Pattern }, "pattern"),
+                    other => {
+                        return Err(Error::new(
+                            shape.span(),
+                            format!("unknown kind shape `{other}`"),
+                        ));
+                    }
+                };
+                (
+                    quote! {
+                        ::duka_shared::dtype::Kind::Shape(
+                            ::duka_shared::dtype::KindShape::#variant,
+                            ::std::vec::Vec::new().into_boxed_slice(),
+                        )
+                    },
+                    format!("type {text}"),
+                )
+            }
+        } else {
+            let ty: syn::Expr = input.parse()?;
+            // A bare name is the language's own type name: `function`, `string`,
+            // `int`. Anything else is a Rust expression a builtin reaches for.
+            if let syn::Expr::Path(path) = &ty
+                && let Some(segment) = path.path.get_ident()
+                && let Some(known) = named_type(&segment.to_string())
+            {
+                (
+                    quote! { ::duka_shared::dtype::Kind::OfType(#known) },
+                    segment.to_string(),
+                )
+            } else {
+                (
+                    quote! { ::duka_shared::dtype::Kind::OfType(#ty) },
+                    type_spelling(&ty),
+                )
+            }
+        };
+        Ok(Self {
+            name: name.to_string(),
+            kind,
+            spelling,
+        })
+    }
+}
+
+/// The Rust expression a bare language type name stands for.
+///
+/// `params(F: function)` reads as the language reads; the check it generates is
+/// the `Type` value the name denotes.
+fn named_type(name: &str) -> Option<TokenStream> {
+    Some(match name {
+        "any" => quote! { ::duka_shared::dtype::Type::Any },
+        "unknown" => quote! { ::duka_shared::dtype::Type::Unknown },
+        "never" => quote! { ::duka_shared::dtype::Type::Never },
+        "nil" => quote! { ::duka_shared::dtype::Type::Nil },
+        "bool" => quote! { ::duka_shared::dtype::Type::Bool },
+        "int" => quote! { ::duka_shared::dtype::Type::Int },
+        "float" => quote! { ::duka_shared::dtype::Type::Float },
+        "string" => quote! { ::duka_shared::dtype::Type::String },
+        "coroutine" => quote! { ::duka_shared::dtype::Type::Coroutine },
+        "function" => quote! { ::duka_shared::dtype::Type::Function(None) },
+        "array" | "list" => quote! { ::duka_shared::dtype::Type::Array(None) },
+        "table" => quote! { ::duka_shared::dtype::Type::Table(None, None, None) },
+        _ => return None,
+    })
+}
+
+/// How a type written as a Rust expression reads in the language.
+///
+/// A fixed type has a name of its own; anything else is spelled as it is
+/// written, because the macro cannot know what an alias will mean.
+pub(crate) fn type_spelling(ty: &syn::Expr) -> String {
+    let text = quote!(#ty).to_string().replace(' ', "");
+    match text.as_str() {
+        "Type::Any" => "any",
+        "Type::Unknown" => "unknown",
+        "Type::Never" => "never",
+        "Type::Nil" => "nil",
+        "Type::Bool" => "bool",
+        "Type::Int" => "int",
+        "Type::Float" => "float",
+        "Type::String" => "string",
+        "Type::Coroutine" => "coroutine",
+        "Type::Function(None)" => "function",
+        "Type::Array(None)" => "array",
+        "Type::Table(None,None,None)" => "table",
+        _ => return text,
+    }
+    .to_owned()
 }
 pub(crate) struct BuiltinConstArgs {
     pub name: String,
@@ -1772,7 +1911,9 @@ pub(crate) enum AttrShape {
 impl AttrShape {
     pub(crate) fn allowed(self) -> &'static [&'static str] {
         match self {
-            AttrShape::Type => &["name", "doc", "example", "flags", "count", "bind"],
+            AttrShape::Type => &[
+                "name", "doc", "example", "flags", "count", "bind", "params", "env",
+            ],
             AttrShape::Func => &[
                 "name",
                 "doc",
@@ -2227,6 +2368,8 @@ pub(crate) fn parse_builtin_type_args(tokens: TokenStream) -> Result<BuiltinType
         example: None,
         count: None,
         binds: vec![],
+        params: vec![],
+        env: false,
         flags: MetaInfoFlags::default(),
     };
 
@@ -2253,6 +2396,17 @@ pub(crate) fn parse_builtin_type_args(tokens: TokenStream) -> Result<BuiltinType
             for seg in split_commas(inner) {
                 args.binds.push(syn::parse2::<BindEntry>(seg)?);
             }
+            Ok(())
+        }
+        "params" => {
+            let inner = unwrap_paren(&rest)?;
+            for seg in split_commas(inner) {
+                args.params.push(syn::parse2::<TypeParamEntry>(seg)?);
+            }
+            Ok(())
+        }
+        "env" => {
+            args.env = true;
             Ok(())
         }
         "flags" => {

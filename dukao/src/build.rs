@@ -400,11 +400,11 @@ fn collect_build_files(kao: &Kao) -> Result<Vec<PathBuf>, String> {
     let mut files = vec![];
     let src_dir = kao.root().join(kao.src_dir());
     if src_dir.is_dir() {
-        files.extend(collect_sources(kao, &src_dir)?);
+        files.extend(collect_sources(kao, &src_dir, false, false)?);
     }
     let modules_dir = kao.root().join(kao.modules_dir());
     if modules_dir.is_dir() {
-        files.extend(collect_sources(kao, &modules_dir)?);
+        files.extend(collect_sources(kao, &modules_dir, false, false)?);
     }
     Ok(files)
 }

@@ -49,6 +49,7 @@ impl DukaAnalyzer for TypeChecker {
     type InputData = AnalyzerData;
     type OutputData = AnalyzerData;
 
+    /// to provide a provider, use DukaChecker trait
     fn analyze(
         &self,
         chunk: &Self::InputType,
@@ -105,6 +106,7 @@ impl TypeChecker {
         let effects_root = ctx.effect_root();
         ctx.returns.eff_collect.push(effects_root);
         chunk.visit(&mut ctx);
+
         let tail = chunk
             .block
             .0
@@ -112,15 +114,18 @@ impl TypeChecker {
             .rev()
             .find(|stmt| matches!(stmt.0, NodeKind::Return(..)))
             .and_then(|tail| ctx.infer_tail(tail));
+
         ctx.returns.eff_collect.pop();
         let mut links = std::mem::take(&mut ctx.tables.links);
         let generic_bindings = std::mem::take(&mut ctx.tables.generic_bindings);
         let type_at_span = std::mem::take(&mut ctx.tables.type_at_span);
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
+
         let value = ctx.module_value(tail);
 
         let (errors, backfills) = ctx.finish();
+        data.1.module_value = value.clone();
         for (id, span, ty, value) in backfills {
             match id {
                 Some(id) => {
@@ -139,9 +144,6 @@ impl TypeChecker {
         }
         data.1.links = links;
         data.1.generic_bindings = generic_bindings;
-        // merged rather than replaced: a module resolves its own types through
-        // the ones its dependencies recorded, and a reader asking about a name
-        // in this file is asking about the entry in this file
         data.1.type_at_span.extend(type_at_span);
         (data, errors.collect(), value)
     }
@@ -238,6 +240,15 @@ impl TypeChecker {
         let effects_root = ctx.effect_root();
         ctx.returns.eff_collect.push(effects_root);
         chunk.visit(&mut ctx);
+
+        let tail = chunk
+            .block
+            .0
+            .iter()
+            .rev()
+            .find(|stmt| matches!(stmt.0, NodeKind::Return(..)))
+            .and_then(|tail| ctx.infer_tail(tail));
+
         ctx.returns.eff_collect.pop();
         let mut links = std::mem::take(&mut ctx.tables.links);
         let generic_bindings = std::mem::take(&mut ctx.tables.generic_bindings);
@@ -245,8 +256,10 @@ impl TypeChecker {
         links.sort_by_key(|l| (l.call_span, l.name_span, l.decl_span, l.owner));
         links.dedup();
 
+        let module_value = ctx.module_value(tail);
+
         let (errors, backfills) = ctx.finish();
-        for (id, span, ty, value) in backfills {
+        data.1.module_value = module_value;        for (id, span, ty, value) in backfills {
             match id {
                 Some(id) => {
                     data.1.symbols.set_type_display(id, ty);

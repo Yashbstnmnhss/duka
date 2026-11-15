@@ -1,1 +1,3 @@
 print [=[Hello World]=]
+
+export local a = 1

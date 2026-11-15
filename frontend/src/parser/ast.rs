@@ -731,7 +731,6 @@ impl TypeFnParam {
             TypeFnParam::Var(_, None) => None,
         }
     }
-
     pub fn lower(name: Name, desc: TypeDesc) -> Self {
         let lowered: Option<Kind<NoExt>> = match &desc {
             TypeDesc::Pure(ty) => Some(Kind::OfType(ty.clone())),
@@ -748,6 +747,18 @@ impl TypeFnParam {
         match lowered {
             Some(kind) => TypeFnParam::Kinded(name, kind),
             None => TypeFnParam::Typed(name, desc),
+        }
+    }
+}
+
+impl std::fmt::Display for TypeFnParam {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeFnParam::Name((name, _)) => write!(f, "{name}"),
+            TypeFnParam::Kinded((name, _), kind) => write!(f, "{name}: {kind}"),
+            TypeFnParam::Typed((name, _), ty) => write!(f, "{name}: {ty}"),
+            TypeFnParam::Var(_, Some((name, _))) => write!(f, "...{name}"),
+            TypeFnParam::Var(_, None) => write!(f, "..."),
         }
     }
 }

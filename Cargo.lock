@@ -569,7 +569,6 @@ dependencies = [
  "duka-app",
  "duka-lib",
  "miette",
- "rustyline",
  "serde_json",
  "syntect",
  "thiserror",

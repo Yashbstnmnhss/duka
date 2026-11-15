@@ -20,7 +20,7 @@ pub fn run_check_cmd(root: PathBuf, file: Option<PathBuf>) -> i32 {
             errors.insert(file, e);
         }
     } else if let Some(kao) = kao {
-        let files = match collect_sources(&kao, &root) {
+        let files = match collect_sources(&kao, &root, true, true) {
             Ok(files) => files,
             Err(e) => {
                 eprintln!("{}: {e}", "error".red().bold());

@@ -4,9 +4,12 @@ use std::{
 };
 
 use colored::Colorize;
-use duka_lib::duka_shared::{constants::SOURCE_SUFFIX, errors::DukaSpannedError};
-use duka_lib::kao::find_kao;
 use duka_lib::{DukaVM, builtin, vm::VM};
+use duka_lib::{duka_gc::Heap, kao::find_kao};
+use duka_lib::{
+    duka_shared::{constants::SOURCE_SUFFIX, errors::DukaSpannedError},
+    kao::{DEFAULT_MODULES_DIR, DEFAULT_OUT_DIR},
+};
 
 use crate::diag::{render_compile_error, render_runtime_error};
 
@@ -20,7 +23,7 @@ pub fn run_test_cmd(dir: PathBuf, list: bool, filter: Option<&str>) -> i32 {
         return 2;
     }
 
-    let mut files = collect_duka_files(&dir);
+    let mut files = collect_duka_test_files(&dir);
     files.sort();
     if let Some(f) = filter {
         files.retain(|p| p.to_string_lossy().contains(f));
@@ -96,7 +99,13 @@ fn ms(d: Duration) -> f64 {
 }
 
 /// Recursively collect `.duka` sources, skipping `modules/` dirs & compiled files.
-fn collect_duka_files(dir: &Path) -> Vec<PathBuf> {
+fn collect_duka_test_files(dir: &Path) -> Vec<PathBuf> {
+    let dir = if let Ok(kao) = duka_lib::kao::find_kao(dir) {
+        &kao.tests_dir()
+    } else {
+        dir
+    };
+
     let mut out = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(cur) = stack.pop() {
@@ -107,7 +116,7 @@ fn collect_duka_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 match path.file_name().and_then(|n| n.to_str()) {
-                    Some("modules") => {}
+                    Some(DEFAULT_MODULES_DIR | DEFAULT_OUT_DIR) => {}
                     _ => stack.push(path),
                 }
             } else if matches!(path.extension(), Some(t) if t == SOURCE_SUFFIX) {
@@ -142,7 +151,7 @@ fn run_test(path: &Path) -> TestResult {
     let modules_dir = kao
         .as_ref()
         .map(|k| k.modules_dir())
-        .unwrap_or_else(|| std::path::PathBuf::from(duka_lib::kao::DEFAULT_MODULES_DIR));
+        .unwrap_or_else(|| PathBuf::from(duka_lib::kao::DEFAULT_MODULES_DIR));
     let paths = duka_lib::module::search_paths(&root, &modules_dir.to_string_lossy());
     let sink = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     let vm_state =
@@ -165,7 +174,7 @@ fn run_test(path: &Path) -> TestResult {
         }
     };
 
-    let mut vm = VM::with_vm_globals(duka_lib::duka_gc::Heap::new(), vm_state);
+    let mut vm = VM::with_vm_globals(Heap::new(), vm_state);
     vm.set_entry_path(path.to_path_buf());
     vm.set_stdout(Some(sink.clone()));
     let result = vm.execute(&proto);

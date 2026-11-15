@@ -9,6 +9,8 @@ use duka_shared::constants::cpar;
 use duka_shared::types::{BinOp, DukaGenerator, UnOp};
 use duka_shared::value::ConstValue;
 
+pub mod doc;
+
 #[derive(Debug)]
 pub struct DebugTranspilerError {
     msg: String,

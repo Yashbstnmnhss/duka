@@ -7014,7 +7014,8 @@ end
 
     /// The arity is what the completion item shows, and it has to come from the
     /// declaration rather than be guessed -- `Pick` takes two and `Omit` takes two,
-    /// and neither is inferable from the name.
+    /// and neither is inferable from the name. The kinds come from the same
+    /// table: a type function is not a row of `any`s.
     #[test]
     fn a_duka_type_builtin_carries_its_arity() {
         let find = |name: &str| {
@@ -7024,11 +7025,21 @@ end
         };
         for (name, arity) in [("Pick", 2), ("Omit", 2), ("SameAs", 2), ("Integral", 1)] {
             let view = find(name).unwrap_or_else(|| panic!("{name} missing"));
-            let params = vec!["any"; arity].join(", ");
+            let signature = view.signature.as_deref().unwrap_or_default();
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .unwrap_or_default();
+            assert!(
+                params
+                    .split(", ")
+                    .all(|p| p.contains(": ") && !p.starts_with("any")),
+                "{name} kinds: {signature}"
+            );
             assert_eq!(
-                view.signature.as_deref(),
-                Some(format!("type function {name}({params})").as_str()),
-                "{name} arity"
+                params.split(", ").count(),
+                arity,
+                "{name} arity: {signature}"
             );
         }
     }

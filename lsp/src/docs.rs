@@ -380,13 +380,18 @@ fn signature_of(meta: &MetaInfo) -> Option<String> {
             }
         }
         MetaItemInfo::Constant { ty, val } => format!("@const {}: {} = {}", meta.name, ty, val),
-        MetaItemInfo::Type { param_count } => {
+        MetaItemInfo::Type { params } => {
             // The parameters are the part a reader cannot infer. A type function is
             // applied with type arguments rather than with values, so nothing about
             // `Pick` says whether it takes one or three, and a signature that
-            // leaves them out reads as one that takes none.
-            let params = vec!["any"; *param_count].join(", ");
-            if *param_count == 0 {
+            // leaves them out reads as one that takes none. The kinds are the
+            // function's own: a `const int` is not an `int` written differently.
+            let params = params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.kind))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if params.is_empty() {
                 format!("type function {}()", meta.name)
             } else {
                 format!("type function {}({})", meta.name, params,)

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use colored::Colorize;
 
 use duka_lib::kao::{
-    DEFAULT_MODULES_DIR, Dependency, DependencySource, KAO_FILE, KaoManifest, LockEntry, LockFile,
-    validate_dep_name,
+    DEFAULT_MODULES_DIR, DEFAULT_OUT_DIR, DEFAULT_TESTS_DIR, Dependency, DependencySource,
+    KAO_FILE, KaoManifest, LockEntry, LockFile, validate_dep_name,
 };
 
 pub fn cache_dir() -> PathBuf {
@@ -33,7 +33,12 @@ pub fn cache_key(url: &str) -> String {
 fn is_excluded(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".gitignore" | "kao.lock.toml" | "tests" | "build" | "modules"
+        ".git"
+            | ".gitignore"
+            | "kao.lock.toml"
+            | DEFAULT_TESTS_DIR
+            | DEFAULT_OUT_DIR
+            | DEFAULT_MODULES_DIR
     )
 }
 

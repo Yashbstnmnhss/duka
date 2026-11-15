@@ -18,6 +18,7 @@ pub const DEFAULT_SRC: &str = "src";
 pub const DEFAULT_ENTRY: &str = "main.duka";
 pub const DEFAULT_OUT_DIR: &str = "build";
 pub const DEFAULT_MODULES_DIR: &str = "modules";
+pub const DEFAULT_TESTS_DIR: &str = "tests";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -230,6 +231,10 @@ impl Kao {
             .unwrap_or_else(|| PathBuf::from(DEFAULT_OUT_DIR))
     }
 
+    pub fn tests_dir(&self) -> PathBuf {
+        PathBuf::from(DEFAULT_TESTS_DIR)
+    }
+
     /// Source directory for the kao, default `src`
     pub fn src_dir(&self) -> PathBuf {
         self.manifest
@@ -276,7 +281,14 @@ pub fn find_kao(start: &Path) -> Result<Kao, String> {
 }
 
 /// Recursively collect duka source files for project kao under dir
-pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn collect_sources(
+    kao: &Kao,
+    dir: &Path,
+    only_src: bool,
+    no_res: bool,
+) -> Result<Vec<PathBuf>, String> {
+    let tests_dir = kao.root().join(kao.tests_dir());
+    let modules_dir = kao.root().join(kao.modules_dir());
     let out_dir = kao.root().join(kao.out_dir());
     let mut out = vec![];
     let mut stack = vec![dir.to_path_buf()];
@@ -284,15 +296,27 @@ pub fn collect_sources(kao: &Kao, dir: &Path) -> Result<Vec<PathBuf>, String> {
         let entries = std::fs::read_dir(&cur).map_err(|e| e.to_string())?;
         for entry in entries.flatten() {
             let path = entry.path();
+
             if path.is_dir() {
                 if path == out_dir || path.starts_with(&out_dir) {
                     continue;
                 }
+
+                if only_src {
+                    if path == tests_dir
+                        || path.starts_with(&tests_dir)
+                        || path == modules_dir
+                        || path.starts_with(&modules_dir)
+                    {
+                        continue;
+                    }
+                }
+
                 stack.push(path);
             } else {
                 let is_source = path.extension().and_then(|e| e.to_str()) == Some(SOURCE_SUFFIX);
                 let is_resource = super::module::is_resource(&path);
-                if is_source || is_resource {
+                if is_source || (is_resource && !no_res) {
                     out.push(path);
                 }
             }

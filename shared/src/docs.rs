@@ -333,8 +333,9 @@ impl MetaInfo {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetaItemInfo {
     Type {
-        param_count: usize,
-        // TODO
+        /// The type arguments the function reads, by name and kind. Hover and
+        /// the generated docs render these in place of a bare `any`.
+        params: &'static [TypeParamMeta],
     },
     Static {
         inner: &'static MetaInfo,
@@ -468,6 +469,14 @@ pub struct VarMeta {
     pub literal: bool,
     /// `...Ts`: the variable takes the rest of the type arguments as a list
     pub pack: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParamMeta {
+    pub name: &'static str,
+    /// The kind, written the way the language writes it: `type`, `type array`,
+    /// `const int`, `int`. A reader sees the spelling, not a Rust expression.
+    pub kind: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]

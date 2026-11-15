@@ -1226,41 +1226,6 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    fn call_provide(
-        &mut self,
-        args: Box<[TypeValue]>,
-        span: Span,
-        marks: Option<Box<[Range<usize>]>>,
-    ) -> TypeValue {
-        if args.len() != 1 {
-            self.err(
-                ccallish::PROVIDE,
-                "provide expects exactly one argument",
-                span,
-            );
-            return tv!(Type::Any);
-        }
-        // The argument was evaluated before the call, so what it promised is
-        // the tail of the contribution list. Hand it back as the value this
-        // call denotes: a claim, not a type. Taking it out of the list is
-        // what makes `provide` more than a marker -- the enclosing
-        // combinator no longer sees it and cannot drop it.
-        let start = marks.as_ref().and_then(|m| m.first()).map(|r| r.start);
-        let constraints: Vec<Constraint> = match start {
-            Some(start) => {
-                let mut c = self.contributed.borrow_mut();
-                if start <= c.len() {
-                    c.drain(start..).collect()
-                } else {
-                    vec![]
-                }
-            }
-            None => vec![],
-        };
-        self.provided.extend(constraints.iter().cloned());
-        constraints!(constraints.into_boxed_slice())
-    }
-
     pub(crate) fn call_type_fn(
         &mut self,
         name: &str,
@@ -1268,9 +1233,6 @@ impl<'a> EvalCtx<'a> {
         span: Span,
     ) -> TypeValue {
         let marks = self.arg_marks.take();
-        if name == ccallish::PROVIDE {
-            return self.call_provide(args, span, marks);
-        }
         // A name in the type namespace may stand for a value: every type context
         // builtin is one of these, a closure or a value, and so is anything else
         // declared there. Applying it is the same operation as applying a local
@@ -1456,12 +1418,7 @@ impl<'a> EvalCtx<'a> {
         marks: Option<Box<[Range<usize>]>>,
     ) -> TypeValue {
         match c {
-            TypeClosure::Rust { name, func } => {
-                if name.as_ref() == ccallish::PROVIDE {
-                    return self.call_provide(args, span, marks);
-                }
-                self.call_rust(name, *func, args, span, marks)
-            }
+            TypeClosure::Rust { name, func } => self.call_rust(name, *func, args, span, marks),
             TypeClosure::Inline { name, params, ret } => {
                 self.call_inline_closure(name, params, ret, args, span)
             }
@@ -1747,140 +1704,6 @@ impl<'a> EvalCtx<'a> {
         }
     }
 
-    /// Whether a type has a member called this, read off the class table.
-    ///
-    /// The same walk the flow makes when it applies a `Has` constraint: a
-    /// member may be written on any class above the one that was named, so the
-    /// chain is a walk rather than a comparison, and a class from another
-    /// module is looked up in that module's table.
-    fn has_member(&self, t: &Type, name: &[u8]) -> bool {
-        match t {
-            Type::Rec(inner) => self.has_member(inner, name),
-            Type::Object { id, module, .. } => {
-                let table = match module {
-                    None => self.objects,
-                    Some(key) => match self.modules.and_then(|m| m.get(key.as_ref())) {
-                        Some(module) => &module.analysis.objects,
-                        None => return false,
-                    },
-                };
-                let mut cur = Some(*id);
-                while let Some(i) = cur {
-                    let Some(o) = table.get(i) else {
-                        return false;
-                    };
-                    if o.members.iter().any(|m| m.name.as_bytes() == name)
-                        || o.methods.iter().any(|m| m.name.as_bytes() == name)
-                    {
-                        return true;
-                    }
-                    cur = o.base;
-                }
-                false
-            }
-            Type::TypeTable(..) => std::str::from_utf8(name).is_ok_and(|n| t.field(n).is_some()),
-            // a table holds whatever was put in it, and a variable is not decided
-            Type::Table(..) | Type::Param(_) | Type::Any => true,
-            Type::Union(us) => us.iter().any(|m| self.has_member(m, name)),
-            _ => false,
-        }
-    }
-
-    /// The answer to `Has(A, "m")` when the answer is in the class table.
-    ///
-    /// `None` for everything else. A class type names its class by id rather
-    /// than by what the class declares, so a function handed types alone could
-    /// only refuse every class; the table is here, and the question about a
-    /// class -- or a union with one in it -- is answered here.
-    fn has_answer(&self, name: &str, args: &[TypeValue]) -> Option<TypeValue> {
-        if name != "Has" {
-            return None;
-        }
-        let Type::Literal(ConstValue::String(member)) = args.get(1)?.to_type() else {
-            return None;
-        };
-        let first = args.first()?.to_type();
-        if !matches!(first, Type::Object { .. } | Type::Union(_)) {
-            return None;
-        }
-        Some(tv!(if self.has_member(&first, &member) {
-            first
-        } else {
-            Type::Never
-        }))
-    }
-
-    /// Keeps only what the operands that answered promised.
-    ///
-    /// Every operand of a combinator contributed on the way in, so the flat
-    /// list also holds claims made by operands that did not answer -- and
-    /// `Not(A, C)` does not promise what `C` promised, it promises `C` failed.
-    /// Each operand's answer is read for what it means here: a `never` side
-    /// was not the one that carried the answer, a decided side was, and a side
-    /// still written as a variable is not known here at all.
-    fn compose_contributions(&mut self, name: &str, args: &[TypeValue], marks: &[Range<usize>]) {
-        let (Some(first), Some(last)) = (marks.first(), marks.last()) else {
-            return;
-        };
-        if marks.len() != args.len() {
-            return;
-        }
-        let readings: Vec<Reading> = args.iter().map(|a| Reading::of(&a.to_type())).collect();
-        // `Any` hands over a decided side, or the one side left when every
-        // other side failed; two undecided sides have nothing in common a flat
-        // list could carry. `All` hands over every side that did not fail,
-        // because the answer being read means each of them held. `Not` hands
-        // over its first side, and inverts the second -- which only carried
-        // the answer by failing.
-        let keep: Vec<bool> = match name {
-            ccallish::ANY => {
-                if readings.contains(&Reading::Settled) {
-                    readings.iter().map(|r| *r == Reading::Settled).collect()
-                } else {
-                    let survivors: Vec<usize> = (0..readings.len())
-                        .filter(|i| readings[*i] != Reading::Failed)
-                        .collect();
-                    (0..readings.len())
-                        .map(|i| survivors.len() == 1 && i == survivors[0])
-                        .collect()
-                }
-            }
-            ccallish::ALL => readings.iter().map(|r| *r != Reading::Failed).collect(),
-            ccallish::NOT => (0..readings.len())
-                .map(|i| i == 0 || (i == 1 && readings[1] != Reading::Settled))
-                .collect(),
-            _ => return,
-        };
-        let mut c = self.contributed.borrow_mut();
-        if last.end > c.len() {
-            return;
-        }
-        let mut rebuilt: Vec<Constraint> = Vec::with_capacity(c.len());
-        rebuilt.extend_from_slice(&c[..first.start]);
-        for (i, mark) in marks.iter().enumerate() {
-            if !keep[i] {
-                continue;
-            }
-            // the second side of `Not` only carried the answer by failing, so
-            // its promises read the other way round -- and only a single claim
-            // can be read that way, because the opposite of claims taken
-            // together is not the claims read apart
-            let negate = name == "Not" && i == 1;
-            if negate && mark.end - mark.start != 1 {
-                continue;
-            }
-            for x in &c[mark.clone()] {
-                match (negate, negate_constraint(x)) {
-                    (false, _) => rebuilt.push(x.clone()),
-                    (true, Some(n)) => rebuilt.push(n),
-                    (true, None) => {}
-                }
-            }
-        }
-        rebuilt.extend_from_slice(&c[last.end..]);
-        *c = rebuilt;
-    }
-
     fn call_rust(
         &mut self,
         name: &str,
@@ -1893,29 +1716,22 @@ impl<'a> EvalCtx<'a> {
         // intermediates: this is the boundary where a closure in a record is
         // interned into the table it was put in.
         let args: Box<[TypeValue]> = args.iter().map(|a| tv!(self.to_type(a))).collect();
-        let answer = (func)(args.clone());
+        let answer = {
+            let mut env = crate::analyzer::builtin::TypeEvalContext::new(
+                &self.contributed,
+                &mut self.provided,
+                marks.as_deref(),
+                self.objects,
+                self.modules,
+            );
+            func.call(&mut env, args.clone())
+        };
         match answer {
             Err(msg) => {
                 self.err(name, format!("builtin type function error: {msg}"), span);
                 tv!(Type::Any)
             }
-            Ok((mut result, constraints)) => {
-                // `Has` is answered here when its first argument is a class:
-                // whether a class has a member is written in no type, so the
-                // registered function -- handed types alone -- could only answer
-                // `never`, and a `where Has(T, "x")` was refused for the classes
-                // it was written about. The promise is still the function's.
-                if let Some(answer) = self.has_answer(name, &args) {
-                    result = answer;
-                }
-                // A combinator hands over only what its answering operands
-                // promised. Every operand contributed on the way in, and the
-                // ones that did not answer promised nothing about the answer.
-                if let Some(marks) = marks
-                    && matches!(name, "Any" | "All" | "Not")
-                {
-                    self.compose_contributions(name, &args, &marks);
-                }
+            Ok((result, constraints)) => {
                 // What this call guarantees, on top of the value. The subject of
                 // each is the argument position of *this* call, so the flow can
                 // bind it to the name that argument was written as. It was
@@ -2449,12 +2265,6 @@ impl<'a> EvalCtx<'a> {
                     if let closure!(ref c) = callee_tv.without_tag() {
                         self.arg_marks = Some(arg_marks.into_boxed_slice());
                         let _ = self.apply_closure(c, tv_args, stmt.1);
-                    } else if let NodeKind::Access(path) = &callee.0
-                        && let Path::Base((name, _)) = &**path
-                        && name == ccallish::PROVIDE
-                    {
-                        self.arg_marks = Some(arg_marks.into_boxed_slice());
-                        let _ = self.call_type_fn(name, tv_args, stmt.1);
                     }
                     Return::None
                 }
@@ -3800,6 +3610,81 @@ fn negate_constraint(c: &Constraint) -> Option<Constraint> {
         Constraint::IsNot(s, t) => Some(Constraint::Is(s.clone(), t.clone())),
         _ => None,
     }
+}
+
+/// Keeps only what the operands that answered promised.
+///
+/// Every operand of a combinator contributed on the way in, so the flat list
+/// also holds claims made by operands that did not answer -- and `Not(A, C)`
+/// does not promise what `C` promised, it promises `C` failed. Each operand's
+/// answer is read for what it means here: a `never` side was not the one that
+/// carried the answer, a decided side was, and a side still written as a
+/// variable is not known here at all.
+pub(crate) fn compose_contributions(
+    contributed: &RefCell<Vec<Constraint>>,
+    name: &str,
+    args: &[TypeValue],
+    marks: &[Range<usize>],
+) {
+    let (Some(first), Some(last)) = (marks.first(), marks.last()) else {
+        return;
+    };
+    if marks.len() != args.len() {
+        return;
+    }
+    let readings: Vec<Reading> = args.iter().map(|a| Reading::of(&a.to_type())).collect();
+    // `Any` hands over a decided side, or the one side left when every other
+    // side failed; two undecided sides have nothing in common a flat list could
+    // carry. `All` hands over every side that did not fail, because the answer
+    // being read means each of them held. `Not` hands over its first side, and
+    // inverts the second -- which only carried the answer by failing.
+    let keep: Vec<bool> = match name {
+        ccallish::ANY => {
+            if readings.contains(&Reading::Settled) {
+                readings.iter().map(|r| *r == Reading::Settled).collect()
+            } else {
+                let survivors: Vec<usize> = (0..readings.len())
+                    .filter(|i| readings[*i] != Reading::Failed)
+                    .collect();
+                (0..readings.len())
+                    .map(|i| survivors.len() == 1 && i == survivors[0])
+                    .collect()
+            }
+        }
+        ccallish::ALL => readings.iter().map(|r| *r != Reading::Failed).collect(),
+        ccallish::NOT => (0..readings.len())
+            .map(|i| i == 0 || (i == 1 && readings[1] != Reading::Settled))
+            .collect(),
+        _ => return,
+    };
+    let mut c = contributed.borrow_mut();
+    if last.end > c.len() {
+        return;
+    }
+    let mut rebuilt: Vec<Constraint> = Vec::with_capacity(c.len());
+    rebuilt.extend_from_slice(&c[..first.start]);
+    for (i, mark) in marks.iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        // the second side of `Not` only carried the answer by failing, so its
+        // promises read the other way round -- and only a single claim can be
+        // read that way, because the opposite of claims taken together is not
+        // the claims read apart
+        let negate = name == "Not" && i == 1;
+        if negate && mark.end - mark.start != 1 {
+            continue;
+        }
+        for x in &c[mark.clone()] {
+            match (negate, negate_constraint(x)) {
+                (false, _) => rebuilt.push(x.clone()),
+                (true, Some(n)) => rebuilt.push(n),
+                (true, None) => {}
+            }
+        }
+    }
+    rebuilt.extend_from_slice(&c[last.end..]);
+    *c = rebuilt;
 }
 
 /// Rewrites what a type function gave its caller so that a claim about one of

@@ -818,7 +818,7 @@ impl Hinter for DukaHelper {
 impl Completer for DukaHelper {
     type Candidate = DukaCandidate;
     fn complete(
-        &self, // FIXME should be `&mut self`
+        &self,
         line: &str,
         pos: usize,
         _ctx: &rustyline::Context<'_>,

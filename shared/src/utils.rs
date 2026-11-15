@@ -462,10 +462,6 @@ pub struct Symbols {
     pub symbols: HashMap<Box<str>, Vec<Symbol>>,
     pub consts: HashMap<Box<str>, ConstValue>,
     pub labels: HashMap<Box<str>, Span>,
-    /// The `goto`s of the function this scope belongs to, held beside its
-    /// labels so that a jump can be read back against the label it names. A
-    /// `goto` may come before the label it lands on, which is why it is a
-    /// record rather than a resolved pair.
     pub gotos: Vec<(Box<str>, Span)>,
     pub scope_type: ScopeType,
 }

@@ -1,10 +1,14 @@
 use std::path::PathBuf;
 
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
+use duka_lib::duka_frontend::transpiler::doc::{DocItem, DocItemKind, DocTranspiler, DukaDocChunk};
 use duka_lib::duka_shared::attributes::ATTRIBUTES;
 use duka_lib::duka_shared::docs::{
     KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
 };
+use duka_lib::duka_shared::types::{DukaGenerator, SourceName};
+use duka_lib::kao::{DEFAULT_ENTRY, collect_sources, project_config};
+use duka_lib::module::{FileModuleSourceProvider, adapt_analyze_check, parse_source};
 use duka_lib::{builtin, kao};
 use duka_printer::elements::{Book, Chapter, Content, Element, Inline, Link, List, Table};
 use duka_printer::prelude::*;
@@ -16,15 +20,122 @@ pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool
     }
 
     let from = from.unwrap_or_default();
-    let _output = output.unwrap_or("./docs/".into());
+    let output = output.unwrap_or("./docs/".into());
     let project = kao::find_kao(&from).map_err(|msg| {
         miette!("Cannot find targets to generate documents")
             .context(format!("{msg} for path {}", from.display()))
     })?;
+    let project_root = project.root().to_path_buf();
+    let manifest = project.manifest();
 
-    let _manifest = project.manifest();
+    let _ = manifest
+        .and_then(|m| m.build.entry.clone())
+        .unwrap_or(DEFAULT_ENTRY.to_owned());
 
+    let title = manifest
+        .and_then(|m| m.meta.name.clone())
+        .unwrap_or("Dukao archive".to_owned());
+    let config = {
+        let mut config = manifest.map(project_config).unwrap_or_default();
+        config.lexer.keep_comment = true;
+        config
+    };
+
+    let files = collect_sources(&project, &project_root, true, true).map_err(|msg| {
+        miette!("Cannot collect duka sources")
+            .context(format!("{msg} for path {}", project_root.display()))
+    })?;
+
+    let mut chapters = vec![];
+    for path in files.iter() {
+        if path.extension().and_then(|e| e.to_str())
+            != Some(duka_lib::duka_shared::constants::SOURCE_SUFFIX)
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| miette!("Cannot read {}", path.display()).context(e.to_string()))?;
+        let name = path
+            .strip_prefix(&project_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        let source_name = SourceName::File(name.clone().into(), path.clone().into());
+        let mut chunk = match parse_source(
+            &source,
+            source_name,
+            &config,
+            &Default::default(),
+            &Default::default(),
+        ) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                eprintln!("skip {name}: {e}");
+                continue;
+            }
+        };
+        let provider = FileModuleSourceProvider::for_entry(Some(path.as_path()));
+        let (data, errors) = adapt_analyze_check(&mut chunk, &config, &provider, None, None);
+        for error in errors.iter().filter(|e| e.is_error()) {
+            eprintln!("{name}: {error}");
+        }
+        let doc = DocTranspiler::generate((chunk, data), ()).unwrap_or_default();
+        chapters.push(build_file_chapter(name, doc));
+    }
+
+    let book = Book {
+        title,
+        content: chapters,
+        index: true,
+    };
+    let mut printer = FilesPrinter::new(MarkdownRenderer, output, "md");
+    printer.print(&book).into_diagnostic()?;
     Ok(())
+}
+
+/// One file's documentation: the chunk prose, then what it exports in the order
+/// it wrote them.
+fn build_file_chapter(path: String, doc: DukaDocChunk) -> Chapter {
+    let mut b = ChapterBuilder::name(path.clone()).toc(true);
+    b = b.anchor(slugify(&path));
+    if !doc.chunk_doc.is_empty() {
+        b = b.content(text(doc.chunk_doc));
+    }
+    if !doc.items.is_empty() {
+        b = b.header(2, text("Exports"), None);
+    }
+    for item in doc.items.iter() {
+        b = b.push(Element::Anchor(slugify(&item.name), true));
+        b = b.header(3, doc_item_title(item), None);
+        if !item.attributes.is_empty() {
+            b = b.content(text(format!(
+                "Attributes: {}",
+                item.attributes
+                    .iter()
+                    .map(|a| format!("`@{a}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        if let Some(doc) = &item.doc {
+            b = b.content(text(doc.clone()));
+        }
+        if let Some(signature) = &item.signature {
+            b = b.code(Some("duka".to_owned()), signature.clone());
+        }
+    }
+    b.build()
+}
+
+fn doc_item_title(item: &DocItem) -> Content {
+    let kind = match item.kind {
+        DocItemKind::Value => "value",
+        DocItemKind::Function => "function",
+        DocItemKind::Object => "object",
+        DocItemKind::TypeAlias => "type",
+        DocItemKind::TypeFunction => "type function",
+    };
+    text(format!("{kind} `{}`", item.name))
 }
 
 pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
@@ -32,19 +143,19 @@ pub fn gen_doc(output: Option<PathBuf>) -> Result<()> {
     metas.push(TYPE_BUILTINS_META);
 
     let root_path = output.clone().unwrap_or("./docs/references/".into());
-    let book = build_book(&metas, "Standard Library".to_owned());
+    let book = build_std_book(&metas, "Standard Library".to_owned());
 
     let mut printer = FilesPrinter::new(MarkdownRenderer, root_path, "md");
     printer.print(&book).into_diagnostic()?;
 
     let lang_root = output.unwrap_or("./docs/language/".into());
-    let lang_book = build_language_book();
+    let lang_book = build_lang_book();
     let mut lang_printer = FilesPrinter::new(MarkdownRenderer, lang_root, "md");
     lang_printer.print(&lang_book).into_diagnostic()?;
     Ok(())
 }
 
-fn build_language_book() -> Book {
+fn build_lang_book() -> Book {
     Book {
         title: "Language Reference".to_owned(),
         content: vec![
@@ -92,7 +203,7 @@ fn build_keyword_chapter(name: &str, items: impl Iterator<Item = &'static Keywor
     b.build()
 }
 
-fn build_book(metas: &[MetaInfo], title: String) -> Book {
+fn build_std_book(metas: &[MetaInfo], title: String) -> Book {
     let mut chapters = vec![];
     for meta in metas {
         collect_chapters(meta, &mut vec![], &mut chapters);
@@ -262,11 +373,12 @@ fn build_title(meta: &MetaInfo) -> Content {
         }
         MetaItemInfo::Constant { ty, .. } => text(format!("Constant `{}`: {ty}", meta.name)),
         MetaItemInfo::Static { inner } => text(format!("Static `{}`({})", meta.name, inner.name)),
-        MetaItemInfo::Type { param_count } => text(format!(
+        MetaItemInfo::Type { params } => text(format!(
             "type function `{}`({})",
             meta.name,
-            (0..*param_count)
-                .map(|_| "type")
+            params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.kind))
                 .collect::<Vec<_>>()
                 .join(", ")
         )),

@@ -15,12 +15,12 @@ use crate::{
         eval::{EvalCtx, EvalCtxInit},
         tyval::{TypeValue, TypeValueExt},
     },
-    parser::Parser,
+    parser::{Parser, ast::TypeFnParam},
 };
 
 use crate::lexer::token::TokenKind;
 use duka_shared::config::DukaAnalyzerConfig;
-use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope};
+use duka_shared::docs::{BuiltinInfo, MetaInfo, MetaItemInfo, MetaScope, TypeParamMeta};
 use duka_shared::dtype::{Ty, Type};
 use duka_shared::utils::{SymbolTableViewer, SymbolType};
 use duka_shared::value::ConstValue;
@@ -95,10 +95,10 @@ pub fn type_prelude_meta() -> &'static MetaInfo {
         let prelude = type_prelude();
         let mut items: Vec<MetaInfo> = vec![];
         for tf in prelude.type_fns.iter() {
-            items.push(type_fn_meta(tf.name.clone().into_string(), tf.params.len()));
+            items.push(type_fn_meta(tf.name.clone().into_string(), &tf.params));
         }
         for f in prelude.inline_type_fns.iter() {
-            items.push(type_fn_meta(f.name.clone().into_string(), f.params.len()));
+            items.push(type_fn_meta(f.name.clone().into_string(), &f.params));
         }
 
         let inner: &'static [MetaInfo] = Box::leak(items.into_boxed_slice());
@@ -113,12 +113,30 @@ pub fn type_prelude_meta() -> &'static MetaInfo {
     &META
 }
 
-fn type_fn_meta(name: String, count: usize) -> MetaInfo {
+fn type_fn_meta(name: String, params: &[TypeFnParam]) -> MetaInfo {
+    let params: Vec<TypeParamMeta> = params
+        .iter()
+        .map(|p| {
+            let (name, kind) = match p {
+                TypeFnParam::Name(n) => (n.0.clone(), "type".to_owned()),
+                TypeFnParam::Kinded(n, kind) => (n.0.clone(), kind.to_string()),
+                TypeFnParam::Typed(n, ty) => (n.0.clone(), ty.to_string()),
+                TypeFnParam::Var(_, Some(n)) => (format!("...{}", n.0), "type".to_owned()),
+                TypeFnParam::Var(_, None) => ("...".to_owned(), "type".to_owned()),
+            };
+            TypeParamMeta {
+                name: Box::leak(name.into_boxed_str()),
+                kind: Box::leak(kind.into_boxed_str()),
+            }
+        })
+        .collect();
     MetaInfo {
         name: Box::leak(name.into_boxed_str()),
         doc: "",
         example: None,
-        info: MetaItemInfo::Type { param_count: count },
+        info: MetaItemInfo::Type {
+            params: Box::leak(params.into_boxed_slice()),
+        },
         flags: &[],
     }
 }

@@ -384,6 +384,17 @@ pub struct ScopeAnalysis {
     /// back out of the text around the cursor.
     pub member_paths: HashMap<Span, Box<str>>,
     pub modules: ModuleMap,
+    /// The value `require` hands an importer for this very file: what it
+    /// exports, by name, with the type and attributes each carries.
+    ///
+    /// The map above is the dependencies this file read; this is the file
+    /// itself, which is what a documentation pass needs and the reason it is
+    /// recorded here rather than only on the module it belongs to.
+    pub module_value: crate::analyzer::typechecker::ModuleValue,
+    /// The class declarations this file wrote, as written: the symbol table
+    /// keeps the shape a class has, and a document wants the attributes and
+    /// the members beside it.
+    pub object_defs: Vec<crate::parser::ast::ObjectDef>,
     /// The declarations a rewrite saw, as written.
     ///
     /// `export` is sugar too: the rewrite turns it into a write into the module
@@ -1237,6 +1248,7 @@ impl AdaptedData {
         source_info: Arc<SourceInfo>,
     ) -> Option<DukaSpannedError> {
         let attr = seed_objects(analysis, &self.objects).err();
+        analysis.object_defs = self.objects;
         // The classes that were just pushed carry the name they extend and not the
         // link to it: `seed_objects` only knows what the rewrite recorded. Without
         // this the table the type checker reads has `base: None` on every class,

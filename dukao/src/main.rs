@@ -1,5 +1,6 @@
 //! Commandline tool for duka
 use clap::{Parser, Subcommand};
+use duka_lib::kao::DEFAULT_TESTS_DIR;
 use std::path::PathBuf;
 
 use crate::build::{BuildTarget, run_build_cmd};
@@ -22,7 +23,6 @@ mod run;
 mod serve;
 mod test;
 
-pub const KAO_TESTS: &str = "tests";
 pub const KAO_LOCK_FILE: &str = "kao.lock.toml";
 
 #[derive(Parser, Debug)]
@@ -205,7 +205,7 @@ fn real_main() -> i32 {
                 colored::control::set_override(false);
             }
             run_test_cmd(
-                path.unwrap_or_else(|| PathBuf::from(KAO_TESTS)),
+                path.unwrap_or_else(|| PathBuf::from(DEFAULT_TESTS_DIR)),
                 list,
                 filter.as_deref(),
             )
