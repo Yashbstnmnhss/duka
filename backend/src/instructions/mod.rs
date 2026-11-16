@@ -207,7 +207,10 @@ instructions! {
         VarArgPrepare[Ax](in_top, set_a) -> |c| format!("VarArg = {}", rng("R", 0, c, false, "nil")),
         VarArg[AKa](out_top, set_a) -> |a, ct| format!("{} = VarArg", rng_empty("R", a, ct, false)),
 
-        ExtraArg[Ax]() -> |e| format!("Extra = {e}") // 给**下一条**指令扩展参数(位数多)
+        ExtraArg[Ax]() -> |e| format!("Extra = {e}"), // 给**下一条**指令扩展参数(位数多)
+
+        Close[A]() -> |e| format!("Close(R({e}..))"),
+        TBC[A]() -> |e| format!("ToBeClosed(R({e}))")
     }
     as Instruction
 }

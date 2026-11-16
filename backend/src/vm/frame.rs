@@ -1,6 +1,7 @@
 use duka_gc::Gc;
 use duka_gc::{Trace, Tracer};
 
+use crate::instructions::Address;
 use crate::value::{DukaClosure, RuntimeValue};
 
 pub type Stack = Vec<RuntimeValue>;
@@ -16,6 +17,7 @@ pub struct CallFrame {
     pub narg: usize,
     /// VarArg 指令写入的值数量，SetList count=0 时使用
     pub va_count: usize,
+    pub tbc_stack: Vec<Address>,
 }
 #[derive(Debug, Clone)]
 pub enum CallProto {
@@ -39,6 +41,7 @@ pub enum CallProto {
 impl CallFrame {
     pub fn main(proto: Gc<DukaClosure>) -> Self {
         Self {
+            tbc_stack: vec![],
             pc: 0,
             var_args: Vec::new().into_boxed_slice(),
             narg: 0,
@@ -48,6 +51,7 @@ impl CallFrame {
     }
     pub fn call(base: usize, proto_slot: usize, proto: Gc<DukaClosure>, wanted: usize) -> Self {
         Self {
+            tbc_stack: vec![],
             pc: 0,
             var_args: Vec::new().into_boxed_slice(),
             narg: 0,

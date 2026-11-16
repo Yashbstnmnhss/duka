@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use duka_lib::duka_frontend::analyzer::{ObjectType, objects::ObjectMethod};
 use duka_lib::duka_frontend::lexer::token::TokenKind;
-use duka_lib::duka_shared::constants::{cgen, cpar, csugar, ctype};
+use duka_lib::duka_shared::constants::{ccallish, cgen, cpar, csugar, ctype};
 use duka_lib::duka_shared::{
     dtype::{FunctionType, Type},
     errors::Span,
@@ -1215,17 +1215,23 @@ impl Backend {
 
         // `self` and `super` are not symbols: inside a class they are the class
         // and its base, so the answer is the class each one stands for.
-        if let Some(name) = ident_name(kind)
-            && (name == cgen::SELF || name == cgen::SUPER)
-            && let Some((class, _)) = base_class(analysis, pos, name)
-        {
-            return Ok(Some(convert::to_markup_hover(
-                text,
-                token,
-                &crate::hover::Card::new()
-                    .signature(format!("{name}: {}", class.name))
-                    .render(),
-            )));
+        if let Some(name) = ident_name(kind) {
+            if matches!(name, cgen::SELF | cgen::SUPER)
+                && let Some((class, _)) = base_class(analysis, pos, name)
+            {
+                return Ok(Some(convert::to_markup_hover(
+                    text,
+                    token,
+                    &crate::hover::Card::new()
+                        .signature(format!("{name}: {}", class.name))
+                        .render(),
+                )));
+            }
+
+            if ccallish::CALLISHES.contains(&name) {
+                return Ok(docs::keyword_view(name)
+                    .map(|view| convert::to_markup_hover(text, token, &view.render())));
+            }
         }
 
         if let Some((container, detail)) =
@@ -3613,6 +3619,7 @@ fn require_head(chars: &[char], end: usize) -> Option<(String, Vec<String>, bool
     Some((module, members, type_position))
 }
 
+#[inline(always)]
 fn ident_name(kind: &TokenKind) -> Option<&str> {
     match kind {
         TokenKind::Ident(name) => Some(name.as_str()),

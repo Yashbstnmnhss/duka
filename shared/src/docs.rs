@@ -54,6 +54,10 @@ macro_rules! doc {
 }
 
 doc! {
+    for yield: "yield", "## Coroutine\n\n Yield results";
+    for go: "go", "## Coroutine\n\n Run a coroutine";
+    for spawn: "spawn", "## Coroutine\n\n Create a coroutine with a function";
+
     for const: "const", "## Type Context\n\n- Used with generic\n\n- Used in kinds";
     for provide: "provide(...)", "## Type Context\n\n Provide constraints for **parameters** in current type function";
     for ensure: "ensure", "## Type Context\n\n Mark a function with type guard\n```lua\nfunction not_nil<T>(t: T): ensure NonNil(T)\n```";

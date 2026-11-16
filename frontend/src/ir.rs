@@ -191,6 +191,14 @@ impl IRGenerator {
         // 直接从top开始分配
         let eds = self.do_consecutive_from(items, self.allocator.top())?;
         let (start_reg, count) = self.take_all(eds)?;
+
+        if let Some(min) = self
+            .scopes
+            .min_close_reg_from(self.scopes.current_func_depth())
+        {
+            self.emit(IR::Close(min));
+        }
+
         self.emit(IR::Return(start_reg, count));
         Ok(())
     }
@@ -1188,6 +1196,10 @@ impl IRGenerator {
     }
     #[inline]
     fn exit_block(&mut self) -> Result<(), DukaIRError> {
+        if let Some(min) = self.scopes.min_close_reg() {
+            self.emit(IR::Close(min));
+        }
+
         let scope = self.scopes.exit();
 
         if let Scope::Block { locals, .. } = scope {
@@ -1262,6 +1274,13 @@ impl IRGenerator {
                 let callee = std::mem::take(callee);
                 let params = std::mem::take(params).to_vec();
 
+                if let Some(min) = irg
+                    .scopes
+                    .min_close_reg_from(irg.scopes.current_func_depth())
+                {
+                    irg.emit(IR::Close(min));
+                }
+
                 let ed = irg.gen_call(*callee, params, true)?;
                 let (start_reg, count) = irg.take_all(ed)?;
                 irg.emit(IR::Return(start_reg, count));
@@ -1272,6 +1291,13 @@ impl IRGenerator {
             let end = irg.instructions.len();
             irg.inst_spans.push((start..end, span));
         } else {
+            if let Some(min) = irg
+                .scopes
+                .min_close_reg_from(irg.scopes.current_func_depth())
+            {
+                irg.emit(IR::Close(min));
+            }
+
             // 函数体没有显式 return:必须补尾部 Return0
             irg.emit(IR::Return(0, ValueCount::Exact(0)));
         }
@@ -1307,16 +1333,9 @@ impl IRGenerator {
         name: Option<Box<str>>,
         Block(stmts): Block,
     ) -> Result<ExpDesc, DukaIRError> {
+        let body_depth = self.scopes.len();
         self.enter(false);
 
-        // `break` is the only exit of this block and it jumps over whatever
-        // follows, so its values cannot stay in the registers it computed them
-        // in. Park them in locals declared up front instead. The widest `break`
-        // fixes how many there are; every one starts at nil, so a path that
-        // never breaks reads nil rather than whatever the slot used to hold.
-        //
-        // Only this block's own `break`s count: one naming an outer body leaves
-        // past every block between, so its values have nowhere to go here.
         let arity = max_break_arity(name.as_deref(), &stmts);
         let base = self.allocator.top();
         for slot in base..base + arity {
@@ -1335,7 +1354,7 @@ impl IRGenerator {
         });
 
         let end = self.labels.new_label(None)?;
-        self.labels.new_expr_block(end, name);
+        self.labels.new_expr_block(end, name, body_depth);
 
         for stmt in stmts {
             self.gen_stmt(stmt)?;
@@ -1463,7 +1482,10 @@ impl IRGenerator {
             While(cond, blk, _, label) => {
                 let start = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
-                self.labels.new_loop(start, end, label_name(label.as_ref()));
+                let body_depth = self.scopes.len();
+
+                self.labels
+                    .new_loop(start, end, label_name(label.as_ref()), body_depth);
                 self.emit(IR::Label(start));
 
                 self.gen_skip_next(*cond, true)?;
@@ -1488,9 +1510,10 @@ impl IRGenerator {
                 let start = self.labels.new_label(None)?;
                 let to_call = self.labels.new_label(None)?;
                 let end = self.labels.new_label(None)?;
+                let body_depth = self.scopes.len();
                 // continue 跳 to_call(重新取下一个值),否则会重复当前迭代
                 self.labels
-                    .new_loop(to_call, end, label_name(label.as_ref()));
+                    .new_loop(to_call, end, label_name(label.as_ref()), body_depth);
 
                 // R[a] = iterator
                 // R[a+3..] = 循环变量: a+3 是 bool, a+4.. 是值; block 整体预留,见 docs/stdlib.md
@@ -1538,10 +1561,11 @@ impl IRGenerator {
                 let to_start = self.labels.new_label(None)?;
                 let to_continue = self.labels.new_label(None)?;
                 let to_end = self.labels.new_label(None)?;
+                let body_depth = self.scopes.len();
                 // continue 必须跳到 ForLoop(递增+检查)之前,而非循环体开头,
                 // 否则循环变量不前进会死循环
                 self.labels
-                    .new_loop(to_continue, to_end, label_name(label.as_ref()));
+                    .new_loop(to_continue, to_end, label_name(label.as_ref()), body_depth);
 
                 let (var_name, var_span) = match var {
                     Path::Base((name, span)) => (name, span),
@@ -1630,10 +1654,6 @@ impl IRGenerator {
             }
 
             Define(attr_names, vals, global, _) => {
-                // A declared name is not assigned, so it takes no place in the
-                // list of values this statement evaluates and no register here.
-                // Everything else in the statement is written as it was, which is
-                // why the attributes are carried down rather than dropped here.
                 let (attr_names, exprs): (Vec<_>, Vec<_>) = attr_names
                     .into_iter()
                     .zip(vals.into_iter().map(Some).chain(iter::repeat(None)))
@@ -1646,8 +1666,13 @@ impl IRGenerator {
                     .zip(exprs)
                     .partition(|((_, attrs), expr)| has_attr(attrs, catt::CONST) && expr.is_some());
 
-                for ((name, _), expr) in consts {
+                for ((name, attrs), expr) in consts {
                     let cv = self.ensure_const(expr.unwrap().0)?;
+
+                    if has_attr(&attrs, catt::CLOSE) {
+                        return Err(DukaIRErrorKind::CloseConstant(name.into_boxed_str()).into());
+                    }
+
                     self.scopes.declare_const(&name, self.constants.push(cv));
                 }
 
@@ -1656,19 +1681,30 @@ impl IRGenerator {
                 let desc = self.do_consecutive_top(exprs.into_iter().map_while(|i| i).collect())?;
                 let mut pls = self.take_many(desc, attr_names.len())?.into_iter();
 
-                for (name, _) in attr_names {
+                for (name, attrs) in attr_names {
                     let pl = pls
                         .next()
                         .map(Ok)
                         .unwrap_or_else(|| /*unreachable*/self.load_nil().map(Place::R))?;
 
+                    let close = has_attr(&attrs, catt::CLOSE);
+
                     if global {
+                        if close {
+                            return Err(DukaIRErrorKind::CloseGlobal(name.into_boxed_str()).into());
+                        }
+
                         let left = self.set_to_path(Path::Base((name, Span::EMPTY)), true)?;
                         let val = self.without_up_val(pl, ToReg::New)?;
                         self.gen_assign(left, val)?;
                     } else {
                         let wh = self.ensure_allocated(pl, ToReg::New)?;
                         self.scopes.declare_local(&name, wh)?;
+
+                        if close {
+                            self.emit(IR::TBC(wh));
+                            self.scopes.declare_close_var(wh);
+                        }
                     }
                 }
             }
@@ -1755,13 +1791,18 @@ impl IRGenerator {
                     }
                     self.allocator.free_many(from..);
                 }
+
+                if let Some(min) = self.scopes.min_close_reg_from(target.body_depth) {
+                    self.emit(IR::Close(min));
+                }
+
                 self.emit(IR::Jump(target.end))
             }
             Continue(to) => {
                 let named = to.as_ref().map(|n| n.0.as_str());
-                let (start, _) = match named {
-                    None => self.labels.get_loop(),
-                    Some(name) => self.labels.get_loop_named(name),
+                let target = match named {
+                    None => self.labels.get_loop_target(),
+                    Some(name) => self.labels.get_loop_target_named(name),
                 }
                 .ok_or_else(|| {
                     DukaIRError::from(DukaIRErrorKind::OutOfLoop(match named {
@@ -1769,7 +1810,12 @@ impl IRGenerator {
                         Some(name) => format!("continue ::{name}::").into_boxed_str(),
                     }))
                 })?;
-                self.emit(IR::Jump(start))
+
+                if let Some(min) = self.scopes.min_close_reg_from(target.body_depth) {
+                    self.emit(IR::Close(min));
+                }
+
+                self.emit(IR::Jump(target.start))
             }
             // `return` leaves the function, so a block or a loop it is written
             // inside has nothing left to do. The span is `gen_stmts`' to push,

@@ -920,6 +920,10 @@ pub enum DukaIRErrorKind {
         "Expr must be a constant expr, which can be a number, string, boolean or constant table"
     )]
     NotConstExpr,
+    #[error("Trying to close a global variable: \"{}\" gets global and @close at same time")]
+    CloseGlobal(Box<str>),
+    #[error("Trying to close a constant: \"{}\" gets @const and @close at same time")]
+    CloseConstant(Box<str>),
     #[error("Found duplicated label: #{}")]
     DuplicatedLabel(usize),
 }

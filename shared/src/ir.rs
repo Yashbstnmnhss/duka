@@ -120,6 +120,8 @@ pub struct BreakTarget {
     /// `break` leaves to here
     pub end: Lab,
     pub continuable: bool,
+
+    pub body_depth: usize,
 }
 impl Default for Labels {
     fn default() -> Self {
@@ -160,21 +162,29 @@ impl Labels {
             .map(|_| lab)
             .map_err(|_| DukaIRErrorKind::DuplicatedLabel(lab))
     }
-    pub fn new_loop(&mut self, start: Lab, end: Lab, name: Option<Box<str>>) -> usize {
+    pub fn new_loop(
+        &mut self,
+        start: Lab,
+        end: Lab,
+        name: Option<Box<str>>,
+        body_depth: usize,
+    ) -> usize {
         self.loops.push(BreakTarget {
             start,
             end,
             continuable: true,
+            body_depth,
         });
         self.loop_names.push(name);
         self.loops.len() - 1
     }
     /// Enter a `do`-expression: `break` leaves it, `continue` cannot
-    pub fn new_expr_block(&mut self, end: Lab, name: Option<Box<str>>) {
+    pub fn new_expr_block(&mut self, end: Lab, name: Option<Box<str>>, body_depth: usize) {
         self.loops.push(BreakTarget {
             start: end,
             end,
             continuable: false,
+            body_depth,
         });
         self.loop_names.push(name);
     }
@@ -183,12 +193,9 @@ impl Labels {
         self.loop_names.pop();
     }
     /// The innermost loop a `continue` may restart, skipping `do`-expressions
-    pub fn get_loop(&self) -> Option<(Lab, Lab)> {
-        self.loops
-            .iter()
-            .rev()
-            .find(|t| t.continuable)
-            .map(|t| (t.start, t.end))
+    #[inline]
+    pub fn get_loop_target(&self) -> Option<BreakTarget> {
+        self.loops.iter().rev().find(|t| t.continuable).copied()
     }
     /// The innermost body a `break` may leave, loop or `do`-expression
     pub fn get_break_target(&self) -> Option<BreakTarget> {
@@ -207,13 +214,13 @@ impl Labels {
     }
     /// The innermost loop declared under `name`. A `do` never answers: keeping
     /// the name out of the result is what tells `continue` it named one.
-    pub fn get_loop_named(&self, name: &str) -> Option<(Lab, Lab)> {
+    pub fn get_loop_target_named(&self, name: &str) -> Option<BreakTarget> {
         self.loops
             .iter()
             .zip(&self.loop_names)
             .rev()
             .find(|(t, n)| t.continuable && n.as_deref() == Some(name))
-            .map(|(t, _)| (t.start, t.end))
+            .map(|(t, _)| *t)
     }
     pub fn resolve_and_exit(&mut self) -> Result<Vec<(usize, Lab)>, DukaIRError> {
         let gotos = std::mem::take(&mut self.pending_gotos);
@@ -356,10 +363,12 @@ pub enum Scope {
         locals: Vec<(String, usize)>,
         consts: Vec<(String, usize)>,
         up_vals: Vec<(String, UpIndex)>,
+        close_regs: Vec<Reg>,
     },
     Block {
         locals: Vec<(String, usize)>,
         consts: Vec<(String, usize)>,
+        close_regs: Vec<Reg>,
     },
 }
 impl Scope {
@@ -482,11 +491,7 @@ impl Scopes {
             captured: vec![],
         }
     }
-    // #[inline]
-    // fn current(&self) -> &Scope {
-    //     assert!(!self.is_empty());
-    //     self.scopes.last().unwrap()
-    // }
+
     #[inline]
     fn current_mut(&mut self) -> &mut Scope {
         assert!(!self.is_empty());
@@ -522,17 +527,64 @@ impl Scopes {
         self.current_mut().declare_up_val(name, up_idx);
     }
     #[inline]
-    pub fn declare_local(&mut self, name: &str, reg: usize) -> Result<(), DukaIRError> {
+    pub fn declare_close_var(&mut self, reg: Reg) {
+        match self.current_mut() {
+            Scope::Function { close_regs, .. } | Scope::Block { close_regs, .. } => {
+                close_regs.push(reg);
+            }
+        }
+    }
+    #[inline]
+    pub fn declare_local(&mut self, name: &str, reg: Reg) -> Result<(), DukaIRError> {
         self.current_mut().declare_local(name, reg)
     }
     #[inline]
-    pub fn declare_const(&mut self, name: &str, idx: usize) {
+    pub fn declare_const(&mut self, name: &str, idx: Cst) {
         self.current_mut().declare_const(name, idx);
+    }
+
+    pub fn min_close_reg(&self) -> Option<Reg> {
+        match self.scopes.last()? {
+            Scope::Function { close_regs, .. } | Scope::Block { close_regs, .. } => {
+                close_regs.iter().min().copied()
+            }
+        }
+    }
+    pub fn min_close_reg_from(&self, depth: usize) -> Option<Reg> {
+        self.scopes[depth..]
+            .iter()
+            .filter_map(|s| match s {
+                Scope::Function { close_regs, .. } | Scope::Block { close_regs, .. } => {
+                    close_regs.iter().min().copied()
+                }
+            })
+            .min()
+    }
+
+    #[inline]
+    pub fn current_func_depth(&self) -> usize {
+        self.functions.last().copied().unwrap_or_default()
+    }
+
+    fn is_close_reg(&self, reg: Reg) -> bool {
+        self.scopes.iter().any(|s| match s {
+            Scope::Function { close_regs, .. } | Scope::Block { close_regs, .. } => {
+                close_regs.contains(&reg)
+            }
+        })
     }
 
     /// # Panic
     /// Please ensure that func is a function scope
-    fn create_up_val_unchecked(func: &mut Scope, name: &str, is_local: bool, idx: usize) -> usize {
+    fn create_up_val_unchecked(
+        &mut self,
+        func_idx: usize,
+        name: &str,
+        is_local: bool,
+        idx: usize,
+    ) -> usize {
+        let is_close = is_local && self.is_close_reg(idx);
+        let func = self.scopes.get_mut(func_idx).unwrap();
         let Scope::Function { up_vals, .. } = func else {
             panic!("WHY YOU DONT FOLLOW THE RULE");
         };
@@ -542,7 +594,11 @@ impl Scopes {
                 name: Some(name.to_string()),
                 local: is_local,
                 index: idx,
-                kind: UpValueKind::Regular,
+                kind: if is_close {
+                    UpValueKind::ToBeClosed
+                } else {
+                    UpValueKind::Regular
+                },
             },
         ));
         up_vals.len() - 1
@@ -569,10 +625,8 @@ impl Scopes {
                             }
                             let mut idx: usize = n;
                             for (ci, func_idx) in chain.into_iter().rev().enumerate() {
-                                // Ensured
-                                let f = self.scopes.get_mut(func_idx).unwrap();
-                                idx = Self::create_up_val_unchecked(
-                                    f,
+                                idx = self.create_up_val_unchecked(
+                                    func_idx, // Ensured
                                     name,
                                     ci == 0 && matches!(ai, Place::R(..)),
                                     idx,
@@ -630,11 +684,13 @@ impl Scopes {
                 locals: vec![],
                 consts: vec![],
                 up_vals: vec![],
+                close_regs: vec![],
             }
         } else {
             Scope::Block {
                 locals: vec![],
                 consts: vec![],
+                close_regs: vec![],
             }
         });
     }
@@ -976,6 +1032,15 @@ impl Display for DukaIR {
             self.constants.len(),
             self.nesteds.len()
         )?;
+        for (i, up) in self.up_indexes.iter().enumerate() {
+            writeln!(
+                f,
+                "  UpVal[{i}]: {} ({:?}, {})",
+                up.name.as_deref().unwrap_or("..."),
+                up.kind,
+                if up.local { "local" } else { "inherited" }
+            )?;
+        }
         for (i, ins) in self.instructions.iter().enumerate() {
             let span = self
                 .debug_info
@@ -1010,7 +1075,7 @@ impl Display for DukaIR {
                 IR::Array(place, items) => writeln!(f, "{place}.pushes({items:?})")?,
                 IR::GetUpVal(to, who) => writeln!(f, "R[{to}] <- UpVals[{who}]")?,
                 IR::SetUpVal(who, place) => writeln!(f, "UpVals[{who}] <- {place}")?,
-                IR::SelfParam() => writeln!(f, "%next call%")?,
+                IR::SelfParam() => writeln!(f, "%self arg in next call%")?,
                 IR::Call(who, params) => writeln!(
                     f,
                     "R[{who}](params: {params}) %{}%",
@@ -1076,6 +1141,9 @@ impl Display for DukaIR {
                     get_label(&self.label_names, to)
                 )?,
                 IR::Label(l) => writeln!(f, "::{}::", get_label(&self.label_names, l))?,
+
+                IR::TBC(r) => writeln!(f, "%R[{r}] to be closed%")?,
+                IR::Close(r) => writeln!(f, "close(R[{r}..])")?,
             }
         }
 
@@ -1196,5 +1264,11 @@ pub enum IR {
     Take(usize),
     #[tag(pending)]
     TakeAll,
+
     SysCall(Reg, SysCall),
+
+    #[tag(close)]
+    TBC(Reg),
+    #[tag(close)]
+    Close(Reg),
 }

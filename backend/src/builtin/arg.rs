@@ -180,7 +180,7 @@ pub fn oks<const N: usize>(vals: [RuntimeValue; N]) -> DukaResult {
 }
 #[inline]
 /// For result
-pub fn err<E: Error>(heap: &mut Heap, e: E) -> DukaResult {
+pub fn err<E: ToString>(heap: &mut Heap, e: E) -> DukaResult {
     vec![
         RuntimeValue::Bool(false),
         RuntimeValue::from_string(heap, e.to_string()),

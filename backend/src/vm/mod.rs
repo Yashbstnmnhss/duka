@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::{any::TypeId, time::Instant};
 
+use crate::builtin::arg;
+#[cfg(feature = "debug")]
+use crate::vm::debugger::Debugger;
 use crate::{
     DukaVM, builtin,
     errors::{DukaRuntimeError, DukaTraceError},
@@ -24,6 +28,9 @@ use duka_shared::{
     types::ValueCount,
 };
 
+#[cfg(feature = "debug")]
+pub mod debugger;
+
 pub mod coroutine;
 pub mod frame;
 pub mod logic;
@@ -39,6 +46,10 @@ pub enum CoAction {
     Go(CoroutineID, Address, ValueCount, Address),
     /// Create a new coroutine
     Spawn(Address, Address),
+
+    /// For breakpoints
+    #[cfg(feature = "debug")]
+    Break,
 }
 
 /// # 协程调度器
@@ -57,6 +68,10 @@ pub struct Scheduler {
     globals: Gc<GcCell<RuntimeDukaTable>>,
     module_cache: Gc<GcCell<RuntimeDukaTable>>,
     start_time: Option<Instant>,
+
+    #[cfg(feature = "debug")]
+    debugger: Option<Debugger>,
+
     pub vm_globals: VmGlobalsHandle,
 }
 impl Scheduler {
@@ -75,6 +90,11 @@ impl Scheduler {
         Coroutine::new(Self::MAIN_ID, state, None)
     }
 
+    #[cfg(feature = "debug")]
+    pub fn with_debugger(&mut self, debugger: Option<Debugger>) {
+        self.debugger = debugger
+    }
+
     /// ### This will create an initial coroutine *(main coroutine)* with `id = MAIN_ID`
     pub fn with_main(
         main: CoState,
@@ -89,7 +109,7 @@ impl Scheduler {
             heap.alloc(GcCell::new(Self::create_main(main))),
         );
 
-        let shadow: ShadowCell = std::rc::Rc::default();
+        let shadow: ShadowCell = Rc::default();
         shadow
             .borrow_mut()
             .insert(Self::MAIN_ID, CoroutineStatus::Ready);
@@ -100,7 +120,7 @@ impl Scheduler {
             current: Self::MAIN_ID,
             coroutines,
             shadow,
-            gc_flag: std::rc::Rc::default(),
+            gc_flag: Rc::default(),
             stdout: None,
             stderr: None,
             input: None,
@@ -108,6 +128,9 @@ impl Scheduler {
             module_cache,
             start_time: None,
             vm_globals,
+
+            #[cfg(feature = "debug")]
+            debugger: None,
         }
     }
 
@@ -281,13 +304,7 @@ impl Scheduler {
 
                         self.switch_parent();
                         // See docs/stdlib.md
-                        self.write_back(
-                            ret,
-                            vec![
-                                RuntimeValue::Bool(false), //约定 [success?, ...] <- [false, error_message]
-                                RuntimeValue::from_string(heap, kind.to_string()),
-                            ],
-                        );
+                        self.write_back(ret, arg::err(heap, kind));
 
                         self.destroy(id);
                         continue;
@@ -295,6 +312,23 @@ impl Scheduler {
                 }
             };
             match action {
+                #[cfg(feature = "debug")]
+                Break => {
+                    use crate::vm::debugger::DebugAction;
+
+                    let d = api
+                        .debugger
+                        .as_ref()
+                        .expect("A debugger must be there to emit Break signal");
+                    let action = DebugAction::StepIn;
+                    let depth = d.paused_frames.len();
+
+                    api.debugger
+                        .as_mut()
+                        .expect("Checked")
+                        .set_action(action, depth);
+                }
+
                 Return(from, return_count) => {
                     if self.is_main() {
                         self.main_mut().inner.status = CoroutineStatus::Ready;

@@ -48,7 +48,7 @@ impl Project {
     /// skipped by `collect_sources`, so a compiled copy of a file is never
     /// indexed as a second declaration of it.
     pub fn source_files(&self) -> Vec<PathBuf> {
-        let Ok(files) = kao::collect_sources(&self.kao, self.kao.root()) else {
+        let Ok(files) = kao::collect_sources(&self.kao, self.kao.root(), false, true) else {
             return vec![];
         };
         let mut out: Vec<PathBuf> = files

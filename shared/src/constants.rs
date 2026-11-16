@@ -103,6 +103,13 @@ pub mod clex {
     const_str!(ID = "<identifier>");
 }
 
+pub mod ckind {
+    const_str!(TUPLE = "tuple");
+    const_str!(RECORD = "record");
+    const_str!(UNION = "union");
+    const_str!(PATTERN = "pattern");
+}
+
 pub mod ctype {
     const_str!(type sugar REC_PARAM_PREFIX = "__rec_");
     const_str!(type sugar SELF_MARKER = "Self");

@@ -151,6 +151,8 @@ impl DefaultGenerator {
 
         while let Some((ir, using_regs)) = iter.next() {
             match ir {
+                IR::Close(a) => self.emit(I::Close(addr(a)?)),
+                IR::TBC(a) => self.emit(I::TBC(addr(a)?)),
                 IR::Void => continue,
                 IR::Move(to, from) => {
                     self.emit(I::Move(addr(to)?, addr(from)?));

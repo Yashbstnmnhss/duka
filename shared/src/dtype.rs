@@ -9,7 +9,7 @@ use duka_macros::Info;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    constants::ctype,
+    constants::{ckind, ctype},
     effects::EffectSet,
     utils::{MultiPeekable, MultiPeekableExtension},
     value::{ConstValue, DukaFloat, DukaInt},
@@ -138,26 +138,26 @@ pub enum KindShape {
 impl KindShape {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
-            "object" => KindShape::Object,
-            "array" | "list" => KindShape::Array,
-            "table" => KindShape::Table,
-            "record" => KindShape::Record,
-            "tuple" => KindShape::Tuple,
-            "union" => KindShape::Union,
-            "pattern" => KindShape::Pattern,
+            ctype::OBJ => KindShape::Object,
+            ctype::ARR | ctype::LIST => KindShape::Array,
+            ctype::TAB => KindShape::Table,
+            ckind::RECORD => KindShape::Record,
+            ckind::TUPLE => KindShape::Tuple,
+            ckind::UNION => KindShape::Union,
+            ckind::PATTERN => KindShape::Pattern,
             _ => return None,
         })
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            KindShape::Object => "object",
-            KindShape::Array => "array",
-            KindShape::Table => "table",
-            KindShape::Record => "record",
-            KindShape::Tuple => "tuple",
-            KindShape::Union => "union",
-            KindShape::Pattern => "pattern",
+            KindShape::Object => ctype::OBJ,
+            KindShape::Array => ctype::ARR,
+            KindShape::Table => ctype::TAB,
+            KindShape::Record => ckind::RECORD,
+            KindShape::Tuple => ckind::TUPLE,
+            KindShape::Union => ckind::UNION,
+            KindShape::Pattern => ckind::PATTERN,
         }
     }
 }

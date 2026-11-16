@@ -400,16 +400,85 @@ The whole list is optional, each clause is checked on its own.
 
 ## Kinds
 
-Kinds means the "type of type", representing the kinds of different types.
-Kinds are used in `type function` to **constrain** the parameters which are types in type-context.
+A kind is the "type of a type": it says which types a type argument may be. Kinds are written on `type function` parameters, which take types instead of values, and on its return annotation.
 
-Main categories of kinds are following:
+```duka
+type function First(t: type array): type array
+    return t
+end
 
-- Exact type: `type ...`, accepts the subtype of it
-- Literal type: `const ...`, only accepts literal value (but as types)
-- Type function: `fn(params) -> return`
-- Either kinds: `Kind | Kind2`, like the union type
-- Any type: `type`, accepts any types, like `any` accepts any values
+local x: First(array<int>) = [1, 2]
+```
+
+### The kinds
+
+| kind            | written as                          | accepts                                           |
+| --------------- | ----------------------------------- | ------------------------------------------------- |
+| any type        | `type`                              | every type                                        |
+| a type          | `int`, `MyAlias`, `array<int>`, ... | subtypes of it (a literal is its base's subtype)  |
+| literal type    | `const`                             | only literal types                                |
+| bounded literal | `const int`, `const string`, ...    | literal types of that base                        |
+| a shape         | `type object`, `type array`, ...    | only that shape, optional slot kinds check inside |
+| a type function | `type fn(...)`                      | only type functions                               |
+| either          | `type array \| type record`         | any of the written kinds                          |
+
+The shapes are `object`, `array` (or `list`), `table`, `record`, `tuple`, `union` and `pattern`:
+
+```duka
+type function OnlyArray(t: type array) return t end
+type function OnlyRecord(t: type record) return t end
+type function OnlyTuple(t: type tuple) return t end
+```
+
+A shape may name the kinds of its slots, checked recursively: `type array<type fn>` is an array whose element type is a type function.
+
+A bare type is a **subset bound**, not an equality: `t: int` takes `int`, an integer literal type, and anything else that is a subtype of `int`. It is the same rule a value annotation uses.
+
+### Checking
+
+- An argument that is not decided -- `any`, `unknown`, a type variable, a type function that has not been applied yet -- passes every kind. Only an argument the checker knows is refused.
+- A decided argument that does not fit is an error at the call site, with the kind in the message.
+
+```duka del={6}
+type function OnlyInt(t: int)
+    return int
+end
+
+local a: OnlyInt(3) = 3         -- Ok, a literal is a subtype of int
+local b: OnlyInt(string) = ""   -- TypeMismatchErr: argument `t` has invalid kind
+```
+
+### Return kinds
+
+The same spellings may be written after the colon, and then the result is checked against them. A return that is not written as a kind is only a signature: it is shown by the language server, not enforced.
+
+```duka
+type function AsArray(t: type): type array
+    return t
+end
+
+type function Same(t: type): type
+    return t
+end
+```
+
+`AsArray(int)` is refused when it is applied (the result is `int`, not an array), while `Same` accepts any result because `type` is any kind. `const int` requires a literal result; `const` any literal.
+
+### Rest parameter
+
+`...` collects the remaining type arguments into a type tuple, so a function can be written over an unknown number of them:
+
+```duka
+type function Tuple(...ts): type tuple
+    return ts
+end
+```
+
+The name written after `...` names the tuple inside the body; a bare `...` keeps the position without naming it. The result of `Tuple(int, string)` is the type tuple `[int, string]`, which is why the return kind is `type tuple`.
+
+:::tips
+Kinds appear in the hover and completion text of a type function, so a reader sees `t: type array` instead of a row of `any`. Built-in type functions are described the same way: their declared parameter kinds are shown, not placeholders.
+:::
 
 ## See also
 

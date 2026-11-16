@@ -14,7 +14,8 @@ use rustc_hash::FxBuildHasher;
 use duka_shared::types::{SourceName, current_seed};
 
 #[cfg(feature = "debug")]
-use crate::RuntimeDebugInfo;
+use crate::vm::debugger::{Breakpoint, DebugAction, DebugFrameInfo, Debugger};
+
 use crate::{
     errors::{DukaRuntimeError, DukaStackTrace, DukaTraceFrame},
     instructions::{Address, DecodeInstruction},
@@ -583,7 +584,7 @@ pub struct NativeApi {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub input: Option<InputCell>,
     #[cfg(feature = "debug")]
-    pub debug_info: RuntimeDebugInfo,
+    pub debugger: Option<Debugger>,
     pub vm_globals: Option<VmGlobalsHandle>,
 }
 
@@ -648,6 +649,34 @@ impl NativeApi {
         self.input.clone()
     }
 
+    #[cfg(feature = "debug")]
+    pub(crate) fn with_debugger(
+        shadow: ShadowCell,
+        gc_flag: GcFlagCell,
+        stdout: Option<OutputCell>,
+        stderr: Option<OutputCell>,
+        globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
+        module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
+        input: Option<InputCell>,
+        start_time: Option<Instant>,
+        vm_globals: Option<VmGlobalsHandle>,
+        debugger: Option<Debugger>,
+    ) -> Self {
+        Self {
+            pending: None,
+            shadow,
+            gc_flag,
+            start_time,
+            stdout,
+            stderr,
+            globals,
+            module_cache,
+            input,
+            vm_globals,
+            debugger,
+        }
+    }
+
     pub(crate) fn with_runtime(
         shadow: ShadowCell,
         gc_flag: GcFlagCell,
@@ -672,7 +701,7 @@ impl NativeApi {
             vm_globals,
 
             #[cfg(feature = "debug")]
-            debug_info: Default::default(),
+            debugger: None,
         }
     }
 }
@@ -766,6 +795,108 @@ impl Trace for Coroutine {
         self.inner.trace(tracer);
     }
 }
+
+#[cfg(feature = "debug")]
+impl CoState {
+    fn current_breakpoint<'a>(&self, debugger: &'a Debugger) -> Option<&'a Breakpoint> {
+        if debugger.breakpoints.is_empty() {
+            return None;
+        }
+
+        let frame = self.frames.last()?;
+        let proto = match &frame.proto {
+            CallProto::Main { proto, .. } | CallProto::Call { proto, .. } => proto,
+        };
+        let info = &proto.func.debug_info;
+        let span = info
+            .inst_spans
+            .iter()
+            .find_map(|(r, s)| r.contains(&self.pc).then_some(*s))?;
+
+        debugger.breakpoints.iter().find(|bp| {
+            bp.enabled
+                && bp.source_name == info.source_name
+                && (bp.line == span.start.line || bp.line == span.end.line)
+        })
+    }
+
+    fn should_break(&self, debugger: &mut Debugger) -> bool {
+        if self.current_breakpoint(debugger).is_some() {
+            debugger.pause_depth = Some(self.frames.len());
+            debugger.last_pause_pc = Some(self.pc);
+            return true;
+        }
+
+        match debugger.mode {
+            // 跳入, 及不管深度, 每一步都断
+            Some(DebugAction::StepIn) => {
+                if debugger.last_pause_pc == Some(self.pc) {
+                    false
+                } else {
+                    debugger.last_pause_pc = Some(self.pc);
+                    debugger.pause_depth = Some(self.frames.len());
+                    true
+                }
+            }
+            // 跳过, 仍然保持相同的深度
+            Some(DebugAction::StepOver) => {
+                let target = debugger.pause_depth.unwrap_or(self.frames.len());
+                if self.frames.len() <= target {
+                    debugger.last_pause_pc = Some(self.pc);
+                    true
+                } else {
+                    false
+                }
+            }
+            // 跳出, 至少跳到比这个深度高一层的地方
+            Some(DebugAction::StepOut) => {
+                let start = debugger.pause_depth.unwrap_or(usize::MAX);
+                if self.frames.len() < start {
+                    debugger.last_pause_pc = Some(self.pc);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(DebugAction::Continue) | None => false,
+        }
+    }
+
+    pub fn create_debug_frames(&self) -> Vec<DebugFrameInfo> {
+        self.frames
+            .iter()
+            .enumerate()
+            .map(|(i, frame)| {
+                let proto = match &frame.proto {
+                    CallProto::Main { proto, .. } | CallProto::Call { proto, .. } => proto,
+                };
+                let info = &proto.func.debug_info;
+
+                let pc = if i == self.frames.len() - 1 {
+                    self.pc
+                } else {
+                    frame.pc
+                };
+
+                let span = info
+                    .inst_spans
+                    .iter()
+                    .find_map(|(r, s)| r.contains(&pc).then_some(*s))
+                    .unwrap_or(info.all_span);
+
+                DebugFrameInfo {
+                    debug_name: info.debug_name.clone(),
+                    source_name: info.source_name.clone(),
+                    pc_span: Some(span),
+                    pc,
+                    base: frame.get_base(),
+                    stack_len: self.stack.len(),
+                }
+            })
+            .collect()
+    }
+}
+
 impl CoState {
     #[inline(always)]
     fn unpack_up_val<'a>(
@@ -833,10 +964,6 @@ impl CoState {
         }
 
         self.status = Running;
-        #[cfg(feature = "debug")]
-        {
-            api.debug_info.coroutine_id = Some(self.id);
-        }
 
         let mut extra_arg: Option<Bits25> = None;
 
@@ -967,18 +1094,37 @@ impl CoState {
             }
 
             let decoded = self.fetch()?;
-            #[cfg(feature = "debug")]
-            {
-                api.debug_info.pc = self.pc;
-                api.debug_info.frame_depth = self.frames.len();
-                api.debug_info.stack_len = self.stack.len();
-                api.debug_info.base = self.current().get_base();
-            }
-
             (decoded.check_extra().map_err(InvalidInstruction)? && extra_arg.is_none())
                 .then_error(|| ExtraArgNotFound)?;
 
             match decoded {
+                Close(from) => {
+                    let mut first_err = None;
+
+                    while let Some(&top) = vm!(@frame mut).tbc_stack.last() {
+                        if top < from {
+                            break;
+                        }
+
+                        vm!(@frame mut).tbc_stack.pop();
+                        let val = self.take_stack(top as usize)?;
+
+                        if let Err(e) =
+                            self.call_unary_meta_method(heap, api, &MetaMethod::Close, val)
+                            && first_err.is_none()
+                        {
+                            first_err = Some(e);
+                        }
+                    }
+
+                    if let Some(e) = first_err {
+                        return Err(e);
+                    }
+                }
+                TBC(who) => {
+                    vm!(@frame mut).tbc_stack.push(who);
+                }
+
                 Move(a, b) => {
                     vm!(R(a) := R(b));
                 }
@@ -2194,6 +2340,14 @@ impl CoState {
                 }
             }
             vm!(continue);
+
+            #[cfg(feature = "debug")]
+            if let Some(debugger) = api.debugger.as_mut()
+                && self.should_break(debugger)
+            {
+                debugger.paused_frames = self.create_debug_frames();
+                return Ok(CoAction::Break);
+            }
         }
     }
 

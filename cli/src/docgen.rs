@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
+use colored::Colorize;
 use duka_lib::duka_frontend::analyzer::builtin::TYPE_BUILTINS_META;
 use duka_lib::duka_frontend::transpiler::doc::{DocItem, DocItemKind, DocTranspiler, DukaDocChunk};
 use duka_lib::duka_shared::attributes::ATTRIBUTES;
+use duka_lib::duka_shared::constants::SOURCE_SUFFIX;
 use duka_lib::duka_shared::docs::{
     KEYWORD_DOCS, KeywordDoc, MetaInfo, MetaItemInfo, ReturnMeta, TYPE_DOCS,
 };
@@ -48,9 +50,7 @@ pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool
 
     let mut chapters = vec![];
     for path in files.iter() {
-        if path.extension().and_then(|e| e.to_str())
-            != Some(duka_lib::duka_shared::constants::SOURCE_SUFFIX)
-        {
+        if path.extension().and_then(|e| e.to_str()) != Some(SOURCE_SUFFIX) {
             continue;
         }
         let source = std::fs::read_to_string(path)
@@ -70,19 +70,22 @@ pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool
         ) {
             Ok(chunk) => chunk,
             Err(e) => {
-                eprintln!("skip {name}: {e}");
+                eprintln!("{} {name}: {e}", "[Parser error skipped]".yellow());
                 continue;
             }
         };
         let provider = FileModuleSourceProvider::for_entry(Some(path.as_path()));
         let (data, errors) = adapt_analyze_check(&mut chunk, &config, &provider, None, None);
         for error in errors.iter().filter(|e| e.is_error()) {
-            eprintln!("{name}: {error}");
+            eprintln!("{} {name}: {error}", "[Analyzer error detected]".red());
         }
         let doc = DocTranspiler::generate((chunk, data), ()).unwrap_or_default();
+
+        println!("{} {name}", "Writes".green());
         chapters.push(build_file_chapter(name, doc));
     }
 
+    println!("{} 「{title}」", "Prints".green());
     let book = Book {
         title,
         content: chapters,
@@ -90,6 +93,7 @@ pub fn gen_doc_cmd(output: Option<PathBuf>, from: Option<PathBuf>, builtin: bool
     };
     let mut printer = FilesPrinter::new(MarkdownRenderer, output, "md");
     printer.print(&book).into_diagnostic()?;
+
     Ok(())
 }
 

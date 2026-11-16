@@ -23,6 +23,37 @@ type ValueWithNil = Nullable(Value) -- int|nil
 
 A type function is like TypeScript's util type, one argument, returns a type.
 
+## Parameter kinds
+
+A parameter of a type function is a type, and it may say which **kinds** it takes. Written with no kind, it takes any type.
+
+```duka
+type function First(t: type array): type array
+    return t
+end
+
+type function OnlyInt(t: int)        -- a subtype of int
+    return int
+end
+
+type function Literal(n: const int)  -- a literal int
+    return n
+end
+```
+
+- `type` takes any type, the way `any` takes any value.
+- A bare type (`int`, `MyAlias`, `array<int>`) is a **subset bound**: the argument must be a subtype of it.
+- `const` asks for a literal type, `const int` for a literal of that base.
+- `type <shape>` asks for a shape: `object`, `array` (or `list`), `table`, `record`, `tuple`, `union` or `pattern`, with optional slot kinds like `type array<type fn>`.
+- `type fn(...)` asks for a type function.
+- `K1 | K2` takes either kind.
+
+A parameter whose argument is not decided yet -- `any`, `unknown`, a type variable -- passes every kind; only a decided argument that does not fit is refused.
+
+The return annotation takes the same spellings, and then the result is checked against it: `: type array` refuses a function that answers `int`, while `: type` accepts anything. A plain type written there (`: int`) is only a signature, shown by the language server but not enforced.
+
+See [kinds](./types.md#kinds) for the whole list and the examples.
+
 ## Interaction between the two contexts
 
 - type-context -> value-context: by [annotation](/language/types/#annotations)
