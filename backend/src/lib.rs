@@ -485,6 +485,7 @@ mod tests {
     fn duka_proto_with_name_test() {
         let debug_info = DebugInfo {
             inst_spans: [].into(),
+            local_names: Default::default(),
             all_span: Span::EMPTY,
             debug_name: Some("test_function".into()),
             source_name: SourceName::default(),

@@ -1,5 +1,6 @@
 use crate::config::{DukaLexerConfig, DukaParserConfig};
 use crate::errors::{DukaErrorKind, DukaIRError, DukaSpannedError, Span};
+use crate::ir::LocalName;
 use crate::utils::UniqueVec;
 use crate::value::DukaInt;
 use duka_macros::Info;
@@ -313,6 +314,7 @@ pub enum SysCall {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DebugInfo {
+    pub local_names: Box<[LocalName]>,
     pub inst_spans: Box<[(Range<usize>, Span)]>,
     pub all_span: Span,
     pub debug_name: Option<Box<str>>,

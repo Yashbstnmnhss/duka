@@ -78,6 +78,9 @@ impl<K: Display + PartialEq> NameMapper<K> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalName(pub Reg, pub Box<str>);
+
 /// `instack`: `true`则在parent的栈中, `false`则也是parent的up_value
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpIndex {

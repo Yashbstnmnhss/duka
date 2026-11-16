@@ -528,6 +528,8 @@ pub type CoroutineID = usize;
 
 pub type ShadowStatus = HashMap<CoroutineID, CoroutineStatus>;
 pub type ShadowCell = Rc<RefCell<ShadowStatus>>;
+#[cfg(feature = "debug")]
+pub type DebuggerCell = Rc<RefCell<Debugger>>;
 pub type GcFlagCell = Rc<Cell<bool>>;
 pub type OutputCell = Arc<Mutex<Vec<u8>>>;
 pub type InputCell = Arc<Mutex<Vec<u8>>>;
@@ -584,7 +586,7 @@ pub struct NativeApi {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub input: Option<InputCell>,
     #[cfg(feature = "debug")]
-    pub debugger: Option<Debugger>,
+    pub debugger: Option<DebuggerCell>,
     pub vm_globals: Option<VmGlobalsHandle>,
 }
 
@@ -650,31 +652,8 @@ impl NativeApi {
     }
 
     #[cfg(feature = "debug")]
-    pub(crate) fn with_debugger(
-        shadow: ShadowCell,
-        gc_flag: GcFlagCell,
-        stdout: Option<OutputCell>,
-        stderr: Option<OutputCell>,
-        globals: Option<Gc<GcCell<RuntimeDukaTable>>>,
-        module_cache: Option<Gc<GcCell<RuntimeDukaTable>>>,
-        input: Option<InputCell>,
-        start_time: Option<Instant>,
-        vm_globals: Option<VmGlobalsHandle>,
-        debugger: Option<Debugger>,
-    ) -> Self {
-        Self {
-            pending: None,
-            shadow,
-            gc_flag,
-            start_time,
-            stdout,
-            stderr,
-            globals,
-            module_cache,
-            input,
-            vm_globals,
-            debugger,
-        }
+    pub(crate) fn with_debugger(&mut self, debugger: Option<DebuggerCell>) {
+        self.debugger = debugger
     }
 
     pub(crate) fn with_runtime(
@@ -891,6 +870,11 @@ impl CoState {
                     pc,
                     base: frame.get_base(),
                     stack_len: self.stack.len(),
+
+                    depth: i,
+                    narg: frame.narg,
+                    param_count: proto.func.param_count,
+                    has_var_arg: proto.func.has_var_arg,
                 }
             })
             .collect()
@@ -2342,11 +2326,12 @@ impl CoState {
             vm!(continue);
 
             #[cfg(feature = "debug")]
-            if let Some(debugger) = api.debugger.as_mut()
-                && self.should_break(debugger)
-            {
-                debugger.paused_frames = self.create_debug_frames();
-                return Ok(CoAction::Break);
+            if let Some(debugger) = api.debugger.as_ref() {
+                let mut d = debugger.borrow_mut();
+                if self.should_break(&mut d) {
+                    d.paused_frames = self.create_debug_frames();
+                    return Ok(CoAction::Break);
+                }
             }
         }
     }

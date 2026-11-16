@@ -9,8 +9,8 @@ use duka_shared::{
     constants::{catt, ccallish, cgen},
     errors::{DukaIRError, DukaIRErrorKind, Span},
     ir::{
-        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, Place, Reg, RegLifetime,
-        Scope, Scopes, TablePlace, UpIndex, ValuePlace,
+        Allocator, Constants, Cst, DukaIR, ExpDesc, IR, Lab, Labels, LocalName, Place, Reg,
+        RegLifetime, Scope, Scopes, TablePlace, UpIndex, ValuePlace,
     },
     types::{BinOp, DebugInfo, DukaGenerator, SourceInfo, ValueCount, current_debug_time},
     utils::{OrError, is_consecutive},
@@ -208,7 +208,7 @@ impl IRGenerator {
         Block(stmts): Block,
         is_func: bool,
         locals: Vec<(String, Reg)>,
-    ) -> Result<Option<Box<[UpIndex]>>, DukaIRError> {
+    ) -> Result<Option<(Box<[UpIndex]>, Box<[LocalName]>)>, DukaIRError> {
         self.enter(is_func);
 
         for local in locals {
@@ -231,7 +231,7 @@ impl IRGenerator {
         &mut self,
         block: Block,
         is_func: bool,
-    ) -> Result<Option<Box<[UpIndex]>>, DukaIRError> {
+    ) -> Result<Option<(Box<[UpIndex]>, Box<[LocalName]>)>, DukaIRError> {
         self.gen_block_with_locals(block, is_func, vec![])
     }
 
@@ -1178,13 +1178,16 @@ impl IRGenerator {
         }
     }
     #[inline]
-    fn exit_func(&mut self) -> Result<Box<[UpIndex]>, DukaIRError> {
+    fn exit_func(&mut self) -> Result<(Box<[UpIndex]>, Box<[LocalName]>), DukaIRError> {
         self.used_reg_count = self.allocator.used_reg_count();
         self.allocator.exit();
 
         let scope = self.scopes.exit();
 
-        let Scope::Function { up_vals, .. } = scope else {
+        let Scope::Function {
+            up_vals, locals, ..
+        } = scope
+        else {
             unreachable!()
         };
 
@@ -1192,7 +1195,13 @@ impl IRGenerator {
             self.emit_fixup(at, IR::Jump(to));
         }
 
-        Ok(up_vals.into_iter().map(|v| v.1).collect())
+        Ok((
+            up_vals.into_iter().map(|v| v.1).collect(),
+            locals
+                .into_iter()
+                .map(|(name, reg)| LocalName(reg, name.into_boxed_str()))
+                .collect(),
+        ))
     }
     #[inline]
     fn exit_block(&mut self) -> Result<(), DukaIRError> {
@@ -1302,7 +1311,7 @@ impl IRGenerator {
             irg.emit(IR::Return(0, ValueCount::Exact(0)));
         }
 
-        let up_indexes = irg.exit_func()?;
+        let (up_indexes, local_names) = irg.exit_func()?;
         std::mem::swap(&mut irg.scopes, &mut self.scopes);
 
         Ok(DukaIR {
@@ -1322,6 +1331,7 @@ impl IRGenerator {
                 debug_name: name.map(|s| s.into_boxed_str()),
                 source_name: self.source_info.name.clone(),
                 time: current_debug_time(),
+                local_names,
             }),
             logic: None,
             label_names: Box::new(irg.labels.into_names()),
@@ -1844,7 +1854,7 @@ impl IRGenerator {
         Ok(())
     }
 
-    fn gen_main(&mut self, blk: Block) -> Result<Box<[UpIndex]>, DukaIRError> {
+    fn gen_main(&mut self, blk: Block) -> Result<(Box<[UpIndex]>, Box<[LocalName]>), DukaIRError> {
         let up_indexes = self.gen_block_scoped(blk, true)?;
         self.emit(IR::Return(0, ValueCount::Exact(0))); // ensure
         Ok(up_indexes.expect("WTF"))
@@ -1966,7 +1976,7 @@ impl IRGenerator {
     ) -> Result<DukaIR, DukaIRError> {
         let mut generator = Self::new(config, input.source_info);
         generator.globals = globals;
-        let up_indexes = generator.gen_main(input.block)?;
+        let (up_indexes, local_names) = generator.gen_main(input.block)?;
 
         Ok(DukaIR {
             param_count: 0,
@@ -1985,6 +1995,7 @@ impl IRGenerator {
                 all_span: input.span,
                 debug_name: Some(cgen::MAIN.into()),
                 time: current_debug_time(),
+                local_names,
             }),
             logic: Some(input.logic),
             label_names: Box::new(generator.labels.into_names()),

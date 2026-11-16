@@ -13,7 +13,8 @@ members = [
     "printer",
     "lib",
     "lsp",
-    "ffi"
+    "ffi",
+    "dbg"
 ]
 resolver = "3"
 

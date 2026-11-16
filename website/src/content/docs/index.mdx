@@ -3,7 +3,7 @@ title: Duka
 description: The programming language
 template: splash
 hero:
-    tagline: A VM-based programming language project.
+    tagline: A VM-based language with lua's grammar and a compile-time type context.
     actions:
         - text: Playground
           link: ./playground
@@ -17,26 +17,79 @@ hero:
           variant: secondary
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components'
+import { Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components'
 
-## Introduction
+## Get started
 
-<CardGrid stagger>
-    <Card title="Similar to lua" icon="seti:lua">
-        Duka is a language whose grammar is similar to lua.
-    </Card>
-    <Card title="Type context" icon="setting">
-        Duka has a special type system named `type-context`. See
-        [type-context](./language/type-context)
-    </Card>
-    <Card title="Dukao" icon="notes">
-        **Dukao** is a package manager and build system for duka.
-    </Card>
-    <Card title="Read these docs" icon="open-book">
-        Learn more in [Language Reference](./language/).
-    </Card>
-    <Card title="See the repo" icon="github">
-        Duka is an open-source project. See [this
-        repository](https://github.com/Yashbstnmnhss/duka).
-    </Card>
+<Tabs>
+    <TabItem label="dukao">
+    
+        ```sh
+        dukao init my-kao
+        cd my-kao
+        dukao run
+        ```
+
+    </TabItem>
+    <TabItem label="From source">
+
+        ```sh
+        git clone https://github.com/Yashbstnmnhss/duka
+        cd duka
+        cargo build
+        ```
+
+    </TabItem>
+    <TabItem label="REPL">
+
+        ```sh
+        duka-cli repl
+        ```
+
+    </TabItem>
+
+</Tabs>
+
+## Example
+
+```duka
+function ticker(): (int, ...)
+    yield(1)
+    yield(2)
+    return 0
+end
+
+local c: coroutine = spawn(ticker)
+go(c)
+```
+
+## Explore
+
+<CardGrid>
+    <LinkCard
+        title="Language reference"
+        href="./language/"
+        description="Statements, expressions, functions, types."
+    />
+    <LinkCard
+        title="Type context"
+        href="./language/type-context/"
+        description="Types computed at compile time."
+    />
+    <LinkCard
+        title="Standard library"
+        href="./reference/"
+        description="core, array, table, string and friends."
+    />
+    <LinkCard
+        title="Dukao"
+        href="./start/first-project/"
+        description="Init, run, build, test a kao."
+    />
+    <LinkCard title="Rust API" href="./rust/" description="Embed the VM in Rust." />
+    <LinkCard
+        title="Coming from lua"
+        href="./guides/migrate-from-lua/"
+        description="What changes when you switch."
+    />
 </CardGrid>

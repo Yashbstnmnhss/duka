@@ -475,6 +475,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-dbg"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "colored",
+ "duka-lib",
+ "miette",
+ "rustyline",
+ "serde_json",
+ "syntect",
+ "thiserror",
+]
+
+[[package]]
 name = "duka-ffi"
 version = "0.1.0"
 dependencies = [

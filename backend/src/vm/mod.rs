@@ -3,9 +3,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::{any::TypeId, time::Instant};
 
+#[cfg(feature = "debug")]
+use crate::vm::coroutine::DebuggerCell;
+
 use crate::builtin::arg;
 #[cfg(feature = "debug")]
-use crate::vm::debugger::Debugger;
+use crate::vm::debugger::DebugFrameInfo;
+#[cfg(feature = "debug")]
+use crate::vm::frame::CallProto;
 use crate::{
     DukaVM, builtin,
     errors::{DukaRuntimeError, DukaTraceError},
@@ -23,6 +28,8 @@ use crate::{
 };
 use duka_gc::prelude::*;
 use duka_gc::{Trace, Tracer};
+#[cfg(feature = "debug")]
+use duka_shared::ir::LocalName;
 use duka_shared::{
     constants::{MetaMethod, csugar, ctype},
     types::ValueCount,
@@ -70,10 +77,18 @@ pub struct Scheduler {
     start_time: Option<Instant>,
 
     #[cfg(feature = "debug")]
-    debugger: Option<Debugger>,
+    pub debugger: Option<DebuggerCell>,
 
     pub vm_globals: VmGlobalsHandle,
 }
+
+#[derive(Debug, Clone)]
+pub enum Outcome {
+    Finished(ValueCount),
+    #[cfg(feature = "debug")]
+    Paused,
+}
+
 impl Scheduler {
     /// ID of the main coroutine
     pub const MAIN_ID: CoroutineID = 0;
@@ -91,7 +106,7 @@ impl Scheduler {
     }
 
     #[cfg(feature = "debug")]
-    pub fn with_debugger(&mut self, debugger: Option<Debugger>) {
+    pub fn with_debugger(&mut self, debugger: Option<DebuggerCell>) {
         self.debugger = debugger
     }
 
@@ -264,14 +279,14 @@ impl Scheduler {
     }
 
     /// ### main loop
-    pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
+    pub fn run(&mut self, heap: &mut Heap) -> Result<Outcome, DukaTraceError> {
         use CoAction::*;
 
         if self.start_time.is_none() && cfg!(not(target_arch = "wasm32")) {
             self.start_time = Some(Instant::now())
         }
 
-        Ok(loop {
+        Ok(Outcome::Finished(loop {
             self.refresh_shadow();
             if self.take_gc_request() {
                 self.collect_gc(heap).map_err(|kind| DukaTraceError {
@@ -291,10 +306,26 @@ impl Scheduler {
                 self.start_time,
                 Some(self.vm_globals.clone()),
             );
+
+            #[cfg(feature = "debug")]
+            api.with_debugger(self.debugger.clone());
+
             let executed = self.current_mut().inner.execute(heap, &mut api, None);
             let action = match executed {
                 Ok(a) => a,
                 Err(kind) => {
+                    #[cfg(feature = "debug")]
+                    {
+                        if let Some(d) = &self.debugger
+                            && d.borrow().break_on_error
+                        {
+                            let mut d = d.borrow_mut();
+                            d.paused_frames = self.current().inner.create_debug_frames();
+                            // TODO: pass kind
+                            return Ok(Outcome::Paused);
+                        }
+                    }
+
                     if self.is_main() {
                         let trace = self.current_mut().inner.create_trace();
                         return Err(DukaTraceError { kind, trace });
@@ -313,21 +344,7 @@ impl Scheduler {
             };
             match action {
                 #[cfg(feature = "debug")]
-                Break => {
-                    use crate::vm::debugger::DebugAction;
-
-                    let d = api
-                        .debugger
-                        .as_ref()
-                        .expect("A debugger must be there to emit Break signal");
-                    let action = DebugAction::StepIn;
-                    let depth = d.paused_frames.len();
-
-                    api.debugger
-                        .as_mut()
-                        .expect("Checked")
-                        .set_action(action, depth);
-                }
+                Break => return Ok(Outcome::Paused),
 
                 Return(from, return_count) => {
                     if self.is_main() {
@@ -416,7 +433,27 @@ impl Scheduler {
                         })?;
                 }
             }
-        })
+        }))
+    }
+
+    #[cfg_attr(not(feature = "debug"), inline(always))]
+    pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
+        loop {
+            match self.run(heap)? {
+                Outcome::Finished(f) => break Ok(f),
+                #[cfg(feature = "debug")]
+                Outcome::Paused => {
+                    if let Some(d) = &self.debugger {
+                        let mut d = d.borrow_mut();
+                        if d.mode.is_none() {
+                            use crate::vm::debugger::DebugAction;
+                            let depth = d.paused_frames.len();
+                            d.set_action(DebugAction::StepIn, depth);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[inline]
@@ -478,6 +515,60 @@ impl Scheduler {
         for (i, v) in values.into_iter().enumerate() {
             let _ = cur.inner.set_stack(slot + i, v);
         }
+    }
+}
+
+#[cfg(feature = "debug")]
+impl Scheduler {
+    pub fn inspect_params(&self, frame: &DebugFrameInfo) -> Vec<(Box<str>, RuntimeValue)> {
+        let inner = &self.current().inner;
+        let Some(cf) = inner
+            .frames
+            .get(inner.frames.len().saturating_sub(1 + frame.depth))
+        else {
+            return vec![];
+        };
+        let closure = match &cf.proto {
+            CallProto::Main { proto, .. } | CallProto::Call { proto, .. } => proto,
+        };
+        let local_names = &closure.func.debug_info.local_names;
+
+        let n = frame.narg.min(frame.param_count);
+        (0..n)
+            .filter_map(|reg| {
+                let name = local_names
+                    .iter()
+                    .find(|LocalName(r, _)| *r == reg)
+                    .map(|LocalName(_, n)| n.clone())
+                    .unwrap_or_else(|| format!("arg({reg})").into_boxed_str());
+                inner.stack.get(frame.base + reg).map(|v| (name, *v))
+            })
+            .collect()
+    }
+
+    pub fn inspect_locals(&self, frame: &DebugFrameInfo) -> Vec<(Box<str>, RuntimeValue)> {
+        let inner = &self.current().inner;
+        let Some(cf) = inner
+            .frames
+            .get(inner.frames.len().saturating_sub(1 + frame.depth))
+        else {
+            return vec![];
+        };
+        let closure = match &cf.proto {
+            CallProto::Main { proto, .. } | CallProto::Call { proto, .. } => proto,
+        };
+        let func = &closure.func;
+        func.debug_info
+            .local_names
+            .iter()
+            .filter(|LocalName(reg, _)| *reg >= frame.param_count) // skip parameters
+            .filter_map(|LocalName(reg, name)| {
+                inner
+                    .stack
+                    .get(frame.base + reg)
+                    .map(|v| (name.clone(), *v))
+            })
+            .collect()
     }
 }
 

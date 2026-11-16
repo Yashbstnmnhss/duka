@@ -25,6 +25,11 @@ pub struct DebugFrameInfo {
     pub pc: usize,
     pub base: usize,
     pub stack_len: usize,
+
+    pub narg: usize,
+    pub depth: usize,
+    pub param_count: usize,
+    pub has_var_arg: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -34,9 +39,14 @@ pub struct Debugger {
     pub(crate) pause_depth: Option<usize>,
     pub(crate) last_pause_pc: Option<usize>,
     pub(crate) paused_frames: Vec<DebugFrameInfo>,
+    pub(crate) break_on_error: bool,
 }
 
 impl Debugger {
+    pub fn break_on_error(&mut self, val: bool) {
+        self.break_on_error = val
+    }
+
     pub fn clear_breakpoints(&mut self) {
         self.breakpoints.clear();
     }

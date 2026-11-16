@@ -2,9 +2,10 @@
 import { LinkButton } from '@astrojs/starlight/components'
 import DraftContentNotice from 'virtual:starlight/components/DraftContentNotice'
 import mascotSource from '../assets/moelogo.svg?raw'
+//import wordmarkSource from '../assets/dukawordmark.svg?raw'
 
 const { data } = Astro.locals.starlightRoute.entry
-const { title = data.title, tagline, actions = [] } = data.hero || {}
+const { tagline, actions = [] } = data.hero || {}
 ---
 
 <div class="hero">
@@ -19,7 +20,7 @@ const { title = data.title, tagline, actions = [] } = data.hero || {}
     </div>
     <div class="sl-flex stack">
         <div class="sl-flex copy">
-            <h1 id="_top" data-page-title set:html={title} />
+            <h1 id="_top" data-page-title set:html={"DUKA"} />
             {data.draft && <DraftContentNotice />}
             {tagline && <div class="tagline" set:html={tagline} />}
         </div>
@@ -41,8 +42,34 @@ const { title = data.title, tagline, actions = [] } = data.hero || {}
 </div>
 
 <script>
+    const GENOME = {
+        D: ["D", "Ð", "Ⅾ"],
+        U: ["U", "Ü", "ᑌ"],
+        K: ["K", "₭", "Ꮶ"],
+        A: ["A", "Λ", "Δ"]
+    }
+
+    const generateVariant = () => {
+        const mutateCount = Math.random() > 0.5 ? 1 : 2;
+        const indices = [0, 1, 2, 3].sort(() => 0.5 - Math.random()).slice(0, mutateCount);
+        
+        const letters = ["D", "U", "K", "A"];
+        
+        return letters.map((char, i) => {
+            if (indices.includes(i)) {
+                const pool = GENOME[char];
+                return pool[Math.floor(Math.random() * pool.length)];
+            }
+            return char;
+        }).join("");
+    }
+
     const stage = document.querySelector<HTMLElement>('[data-mascot]')
     const svg = stage?.querySelector('svg')
+
+
+    const title = document.querySelector<HTMLElement>('[data-page-title]')
+    title.addEventListener('mouseenter', () => title.innerText = generateVariant())
 
     if (stage && svg) {
         svg.querySelectorAll('#right-ear, #left-ear').forEach((ear) => {
@@ -307,7 +334,7 @@ const { title = data.title, tagline, actions = [] } = data.hero || {}
         .hero {
             grid-template-columns: 7fr 4fr;
             gap: 3%;
-            padding-block: clamp(2.5rem, calc(1rem + 10vmin), 10rem);
+            padding-block: clamp(2rem, calc(1rem + 6vmin), 5.5rem);
         }
 
         .mascot-stage {
@@ -321,6 +348,10 @@ const { title = data.title, tagline, actions = [] } = data.hero || {}
 
         .copy {
             align-items: flex-start;
+        }
+
+        h1 {
+            margin-inline: 0;
         }
 
         .actions {

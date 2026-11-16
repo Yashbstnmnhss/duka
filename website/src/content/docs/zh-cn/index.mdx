@@ -3,7 +3,7 @@ title: Duka
 description: 编程语言
 template: splash
 hero:
-    tagline: 基于虚拟机的编程语言
+    tagline: 类lua的解释型脚本语言
     actions:
         - text: 试验场
           link: ./playground
@@ -17,24 +17,63 @@ hero:
           variant: secondary
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components'
+import { Tabs, TabItem, CardGrid, LinkCard } from '@astrojs/starlight/components'
 
-## 简介
+## 快速开始
 
-<CardGrid stagger>
-    <Card title="语法与lua类似" icon="seti:lua">
-        Duka的设计主要参考了lua语言
-    </Card>
-    <Card title="类型系统" icon="setting">
-        Duka的拥有`类型上下文`的编译期类型计算,见 [type-context](language/type-context)
-    </Card>
-    <Card title="Dukao" icon="notes">
-        **Dukao**是duka的包管理器与构建系统
-    </Card>
-    <Card title="阅读文档" icon="open-book">
-        查阅[语言参考](language/)以了解更多
-    </Card>
-    <Card title="Github仓库" icon="github">
-        Duka是开源项目, [仓库地址](https://github.com/Yashbstnmnhss/duka)
-    </Card>
+<Tabs>
+    <TabItem label="dukao">
+
+        ```sh
+        dukao init my-kao
+        cd my-kao
+        dukao run
+        ```
+
+    </TabItem>
+    <TabItem label="从源码构建">
+
+        ```sh
+        git clone https://github.com/Yashbstnmnhss/duka
+        cd duka
+        cargo build
+        ```
+
+    </TabItem>
+    <TabItem label="REPL">
+
+        ```sh
+        duka-cli repl
+        ```
+
+    </TabItem>
+
+</Tabs>
+
+## 示例
+
+```duka
+function ticker(): (int, ...)
+    yield(1)
+    yield(2)
+    return 0
+end
+
+local c: coroutine = spawn(ticker)
+go(c)
+```
+
+## 探索
+
+<CardGrid>
+    <LinkCard title="语言参考" href="./language/" description="语句、表达式、函数、类型" />
+    <LinkCard title="类型上下文" href="./language/type-context/" description="编译期计算的类型" />
+    <LinkCard title="标准库" href="./reference/" description="core、array、table、string 等" />
+    <LinkCard
+        title="Dukao"
+        href="./start/first-project/"
+        description="kao 的 init、run、build、test"
+    />
+    <LinkCard title="Rust API" href="./rust/" description="在 Rust 里使用duka" />
+    <LinkCard title="类比lua" href="./guides/migrate-from-lua/" description="与 duka 的差异" />
 </CardGrid>

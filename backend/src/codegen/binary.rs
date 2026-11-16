@@ -3,7 +3,7 @@ use crate::instructions::{Instruction, logic::LogicInstruction};
 use crate::{VERSION, value::DukaProto};
 use duka_macros::ThatError;
 use duka_shared::errors::{Position, Span};
-use duka_shared::ir::{UpIndex, UpValueKind};
+use duka_shared::ir::{LocalName, UpIndex, UpValueKind};
 use duka_shared::types::{DebugInfo, QueryCount, SourceInfo, SourceName, current_debug_time};
 use duka_shared::value::ConstValue;
 use duka_shared::{
@@ -19,7 +19,7 @@ use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 use std::sync::Arc;
 
-pub const FORMAT_VERSION: u8 = 2;
+pub const FORMAT_VERSION: u8 = 3;
 const MAGIC: &[u8; 4] = b"DUKA";
 const FLOAT_SIZE: usize = size_of::<DukaFloat>();
 const INTEGER_SIZE: usize = size_of::<DukaInt>();
@@ -167,6 +167,20 @@ impl Load for String {
         let mut buffer = vec![u8::default(); len];
         input.read_exact(&mut buffer).map_err(IOError)?;
         String::from_utf8(buffer).map_err(InvalidUTF8)
+    }
+}
+
+impl<A: Dump, B: Dump, C: Dump> Dump for (A, B, C) {
+    fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.0.dump(output)?;
+        self.1.dump(output)?;
+        self.2.dump(output)?;
+        Ok(())
+    }
+}
+impl<A: Load, B: Load, C: Load> Load for (A, B, C) {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok((A::load(input)?, B::load(input)?, C::load(input)?))
     }
 }
 
@@ -621,8 +635,27 @@ impl Load for SourceInfo {
     }
 }
 
+impl Load for Box<str> {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(String::load(input)?.into())
+    }
+}
+
+impl Load for LocalName {
+    fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
+        Ok(Self(usize::load(input)?, Box::<str>::load(input)?))
+    }
+}
+impl Dump for LocalName {
+    fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.0.dump(output)?;
+        self.1.dump(output)
+    }
+}
+
 impl Dump for DebugInfo {
     fn dump<T: Write>(&self, output: &mut T) -> Result<(), DukaDumpError> {
+        self.local_names.dump(output)?;
         self.all_span.dump(output)?;
         self.debug_name.dump(output)?;
         self.inst_spans.dump(output)?;
@@ -633,6 +666,7 @@ impl Dump for DebugInfo {
 impl Load for DebugInfo {
     fn load<T: Read>(input: &mut T) -> Result<Self, DukaDumpError> {
         Ok(Self {
+            local_names: Vec::<_>::load(input)?.into(),
             all_span: Span::load(input)?,
             debug_name: Option::<String>::load(input)?.map(|s| s.into_boxed_str()),
             inst_spans: Vec::<(_, _)>::load(input)?.into(),

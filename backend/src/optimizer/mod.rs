@@ -339,6 +339,7 @@ mod tests {
             param_count: 0,
             has_var_arg: false,
             debug_info: Box::new(DebugInfo {
+                local_names: Default::default(),
                 inst_spans: Box::new([]),
                 all_span: Span::EMPTY,
                 debug_name: None,
