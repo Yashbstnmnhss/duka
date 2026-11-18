@@ -52,11 +52,7 @@ impl DukaGenerator<DukaDocChunk, ()> for DocTranspiler {
             item_of(&analysis, node, &mut items);
         }
         Ok(DukaDocChunk {
-            chunk_doc: analysis
-                .chunk_doc
-                .as_deref()
-                .unwrap_or_default()
-                .to_owned(),
+            chunk_doc: analysis.chunk_doc.as_deref().unwrap_or_default().to_owned(),
             items,
         })
     }
@@ -133,17 +129,13 @@ fn item_of(analysis: &ScopeAnalysis, node: &Node, out: &mut Vec<DocItem>) {
             attributes: attribute_names(attrs),
         }),
         NodeKind::TypeFunction(((name, attrs), _), params, body) => {
-            let returns = body
-                .2
-                .as_ref()
-                .filter(|r| !r.tys.is_empty())
-                .map(|r| {
-                    r.tys
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                });
+            let returns = body.2.as_ref().filter(|r| !r.tys.is_empty()).map(|r| {
+                r.tys
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
             let params = params
                 .iter()
                 .map(|p| p.to_string())

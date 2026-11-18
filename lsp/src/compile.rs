@@ -8,18 +8,22 @@ use std::{
 };
 
 use duka_lib::duka_shared::{
-    constants::{COMPILED_SUFFIX, SOURCE_SUFFIX},
+    constants::{COMPILED_SUFFIX, SOURCE_SUFFIX, cpar, ctype},
     errors::{DukaDiagnose, Span},
     types::{DukaLexer, SourceName, TokenStream},
+    value::ConstValue,
 };
 use duka_lib::{
     duka_frontend::{
         analyzer::{
-            ScopeAnalysis,
+            ScopeAnalysis, Visit, Visitor,
             modules::{DukaSource, DukaSourceProvider, ModuleBuildCache, ModuleMap, ModuleType},
         },
         lexer::{LexerWithMacro, token::Token},
-        parser::{IncrementalParseCache, Parser},
+        parser::{
+            IncrementalParseCache, Parser,
+            ast::{DukaChunk, Expr, Node, NodeKind, Path as AstPath},
+        },
     },
     duka_shared::config::DukaParsingConfig,
 };
@@ -45,6 +49,7 @@ pub struct DocAnalysis {
     pub scope: ScopeAnalysis,
     pub roles: HashMap<Span, roles::Role>,
     pub modules: Option<ModuleResolver>,
+    pub require_bindings: HashMap<String, PathBuf>,
     pub parse_cache: Option<IncrementalParseCache>,
 }
 
@@ -73,6 +78,91 @@ impl std::fmt::Debug for ModuleResolver {
             .field("caller_path", &self.caller_path)
             .finish()
     }
+}
+
+struct RequireCollector<'a> {
+    resolver: &'a ModuleResolver,
+    modules: &'a ModuleMap,
+    out: HashMap<String, PathBuf>,
+}
+
+fn called_name(node: &Node) -> Option<&str> {
+    if let NodeKind::Access(path) = &node.0
+        && let AstPath::Base((name, _)) = path.as_ref()
+    {
+        return Some(name.as_str());
+    }
+    None
+}
+
+impl RequireCollector<'_> {
+    fn note(&mut self, name: &str, value: &Node) {
+        let NodeKind::Call(callee, args) = &value.0 else {
+            return;
+        };
+        let Some(callee) = called_name(callee) else {
+            return;
+        };
+        if callee != cpar::REQUIRE && callee != ctype::REQUIRE {
+            return;
+        }
+        let Some(NodeKind::Literal(ConstValue::String(bytes))) = args.first().map(|arg| &arg.0)
+        else {
+            return;
+        };
+        let Ok(module) = std::str::from_utf8(bytes) else {
+            return;
+        };
+        let Some(resolved) = self.resolver.resolve(self.modules, module) else {
+            return;
+        };
+        let Some(path) = resolved.source.name.path() else {
+            return;
+        };
+        self.out.insert(name.to_owned(), path.to_path_buf());
+    }
+}
+
+fn path_base_name(path: &AstPath) -> Option<&str> {
+    match path {
+        AstPath::Base((name, _)) => Some(name.as_str()),
+        AstPath::Chain(rest, _) => path_base_name(rest),
+        AstPath::Expr(_) => None,
+    }
+}
+
+impl Visitor for RequireCollector<'_> {
+    fn visit_node(&mut self, expr: &Expr) {
+        match &expr.0 {
+            NodeKind::Define(names, values, _, _) => {
+                for (name, value) in names.iter().zip(values.iter()) {
+                    self.note(&name.0.0.0, value);
+                }
+            }
+            NodeKind::Assign(paths, values) => {
+                for (path, value) in paths.iter().zip(values.iter()) {
+                    if let Some(name) = path_base_name(path) {
+                        self.note(name, value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn require_bindings_of(
+    chunk: &DukaChunk,
+    resolver: &ModuleResolver,
+    modules: &ModuleMap,
+) -> HashMap<String, PathBuf> {
+    let mut collector = RequireCollector {
+        resolver,
+        modules,
+        out: HashMap::new(),
+    };
+    chunk.visit(&mut collector);
+    collector.out
 }
 
 impl DocAnalysis {
@@ -262,6 +352,7 @@ pub fn analyze_incremental(
                 scope: ScopeAnalysis::default(),
                 roles: HashMap::new(),
                 modules: None,
+                require_bindings: HashMap::new(),
                 parse_cache: None,
             };
         }
@@ -299,12 +390,14 @@ pub fn analyze_incremental(
         &resolver,
         &data.1.modules,
     ));
+    let require_bindings = require_bindings_of(&chunk, &resolver, &data.1.modules);
     DocAnalysis {
         tokens,
         errors,
         scope: data.1,
         roles: roles::collect(&chunk),
         modules: Some(resolver),
+        require_bindings,
         parse_cache: Some(parse_cache),
     }
 }

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "frontend",
+    "syntax",
     "backend",
     "backend-wasm",
     "app",
@@ -24,7 +25,6 @@ repository = "https://github.com/Yashbstnmnhss/duka"
 [profile.release]
 lto = true
 codegen-units = 1
-panic = "abort"
 
 [profile.dev.package.duka-frontend]
 opt-level = 1

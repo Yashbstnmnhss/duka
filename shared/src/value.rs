@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use core::str;
 use std::{borrow::Cow, collections::HashMap, fmt::Display, hash::Hash};
 
-use crate::dtype::Type;
+use crate::{dtype::Type, utils::Successor};
 
 pub const SHORT_STR_LEN: usize = 14;
 pub const MID_STR_LEN: usize = 47;
@@ -15,6 +15,84 @@ pub const MID_STR_LEN: usize = 47;
 pub type DukaInt = i64;
 /// float type
 pub type DukaFloat = f64;
+
+impl Successor for DukaInt {
+    fn succ(self) -> Option<Self> {
+        self.checked_add(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd)]
+pub struct DukaFloatWrapper(pub DukaFloat);
+
+impl PartialEq<DukaFloatWrapper> for DukaInt {
+    fn eq(&self, other: &DukaFloatWrapper) -> bool {
+        let f = (*self) as DukaFloat;
+        f.eq(&other.0)
+    }
+}
+impl PartialOrd<DukaFloatWrapper> for DukaInt {
+    fn partial_cmp(&self, other: &DukaFloatWrapper) -> Option<std::cmp::Ordering> {
+        other.partial_cmp(self).map(std::cmp::Ordering::reverse)
+    }
+}
+impl PartialEq<DukaInt> for DukaFloatWrapper {
+    fn eq(&self, other: &DukaInt) -> bool {
+        self.0.eq(&(*other as DukaFloat))
+    }
+}
+impl PartialOrd<DukaInt> for DukaFloatWrapper {
+    fn partial_cmp(&self, other: &DukaInt) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&(*other as DukaFloat).into())
+    }
+}
+
+impl From<DukaFloatWrapper> for DukaFloat {
+    fn from(value: DukaFloatWrapper) -> Self {
+        value.0
+    }
+}
+impl From<DukaFloat> for DukaFloatWrapper {
+    fn from(value: DukaFloat) -> Self {
+        Self(value)
+    }
+}
+
+impl Display for DukaFloatWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl Eq for DukaFloatWrapper {}
+impl Hash for DukaFloatWrapper {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if self.0 == 0f64 {
+            0
+        } else if self.0.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            self.0.to_bits()
+        }
+        .hash(state)
+    }
+}
+
+impl<'de> Deserialize<'de> for DukaFloatWrapper {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self(f64::deserialize(deserializer)?))
+    }
+}
+impl Serialize for DukaFloatWrapper {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
 
 /// Duka's table type
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]

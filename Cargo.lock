@@ -505,6 +505,7 @@ dependencies = [
  "criterion",
  "duka-macros",
  "duka-shared",
+ "duka-syntax",
  "serde",
 ]
 
@@ -573,6 +574,10 @@ dependencies = [
  "serde",
  "unicode-ident",
 ]
+
+[[package]]
+name = "duka-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "dukao"

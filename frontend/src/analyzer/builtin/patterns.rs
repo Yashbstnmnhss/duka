@@ -1,12 +1,48 @@
 use duka_macros::duka_builtin_type_def;
 use duka_shared::dtype::{CmpOp, NumPred, Pattern, Pred, TextPred, Type};
-use duka_shared::value::ConstValue;
+use duka_shared::value::{ConstValue, DukaFloat, DukaFloatWrapper, DukaInt};
 
 use super::{TypeResult, plain, string_arg};
 use crate::analyzer::tyval::{TypeValue, TypeValueExt};
 
 fn pat_of(base: Type, pred: Pred) -> TypeResult {
     plain(tv!(Type::Pattern(Box::new(Pattern { base, pred }))))
+}
+
+/// 数值谓词的界跟着底座走:整型底座取精确 `i64`(浮点字面量须是整值),
+/// 浮点底座把整数字面量加宽成 `f64`。
+enum Bound {
+    Int(DukaInt),
+    Float(DukaFloat),
+}
+
+fn bound_of(value: &ConstValue, base: &Type) -> Result<Bound, String> {
+    if base.base() == &Type::Int {
+        match value {
+            ConstValue::Int(i) => Ok(Bound::Int(*i)),
+            ConstValue::Float(f)
+                if f.fract() == 0.0 && *f >= i64::MIN as f64 && *f <= i64::MAX as f64 =>
+            {
+                Ok(Bound::Int(*f as i64))
+            }
+            other => Err(format!(
+                "an integer pattern needs an integer bound, got {other}"
+            )),
+        }
+    } else {
+        match value {
+            ConstValue::Int(i) => Ok(Bound::Float(*i as DukaFloat)),
+            ConstValue::Float(f) => Ok(Bound::Float(*f)),
+            other => Err(format!("expected a number, got {other}")),
+        }
+    }
+}
+
+fn num_pred(op: CmpOp, value: &ConstValue, base: &Type) -> Result<Pred, String> {
+    Ok(match bound_of(value, base)? {
+        Bound::Int(n) => Pred::Int(NumPred::cmp(op, n)),
+        Bound::Float(n) => Pred::Num(NumPred::cmp(op, DukaFloatWrapper::from(n))),
+    })
 }
 
 fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
@@ -19,7 +55,8 @@ fn num_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
         Type::Literal(cv) => cv,
         other => return Err(format!("expected a number, got {other}")),
     };
-    pat_of(base, Pred::Num(NumPred::Cmp(op, value)))
+    let pred = num_pred(op, &value, &base)?;
+    pat_of(base, pred)
 }
 
 fn text_pat(v: Box<[TypeValue]>, f: fn(Box<str>) -> TextPred) -> TypeResult {
@@ -42,7 +79,15 @@ fn len_pat(v: Box<[TypeValue]>, op: CmpOp) -> TypeResult {
         Type::Literal(ConstValue::Int(n)) => n,
         other => return Err(format!("expected a length, got {other}")),
     };
-    pat_of(base, Pred::Text(TextPred::Len(op, n)))
+    pat_of(base, Pred::Text(TextPred::Len(NumPred::cmp(op, n))))
+}
+
+fn combine_num<N: PartialOrd + Copy>(x: &NumPred<N>, y: &NumPred<N>, and: bool) -> NumPred<N> {
+    if and {
+        x.clone().and(y.clone())
+    } else {
+        x.clone().or(y.clone())
+    }
 }
 
 fn combine_pat(v: Box<[TypeValue]>, and: bool) -> TypeResult {
@@ -53,17 +98,14 @@ fn combine_pat(v: Box<[TypeValue]>, and: bool) -> TypeResult {
         return Err(format!("expected two patterns, got {left} and {right}"));
     };
     let pred = match (&a.pred, &b.pred) {
-        (Pred::Num(x), Pred::Num(y)) => Pred::Num(if and {
-            NumPred::And(vec![x.clone(), y.clone()].into())
-        } else {
-            NumPred::Or(vec![x.clone(), y.clone()].into())
-        }),
+        (Pred::Int(x), Pred::Int(y)) => Pred::Int(combine_num(x, y, and)),
+        (Pred::Num(x), Pred::Num(y)) => Pred::Num(combine_num(x, y, and)),
         (Pred::Text(x), Pred::Text(y)) => Pred::Text(if and {
             TextPred::And(vec![x.clone(), y.clone()].into())
         } else {
             TextPred::Or(vec![x.clone(), y.clone()].into())
         }),
-        _ => return Err("a number pattern and a text pattern cannot combine".to_owned()),
+        _ => return Err("patterns must combine over the same base type".to_owned()),
     };
     pat_of(a.base.clone(), pred)
 }
@@ -74,7 +116,8 @@ fn not_pat(v: Box<[TypeValue]>) -> TypeResult {
         return Err(format!("expected a pattern, got {inner}"));
     };
     let pred = match &p.pred {
-        Pred::Num(x) => Pred::Num(NumPred::Not(Box::new(x.clone()))),
+        Pred::Int(x) => Pred::Int(x.clone().not()),
+        Pred::Num(x) => Pred::Num(x.clone().not()),
         Pred::Text(x) => Pred::Text(TextPred::Not(Box::new(x.clone()))),
     };
     pat_of(p.base.clone(), pred)
@@ -101,10 +144,15 @@ duka_builtin_type_def! {
                 Type::Literal(cv) => cv,
                 other => return Err(format!("expected a number, got {other}")),
             };
-            pat_of(base, Pred::Num(NumPred::And([
-                NumPred::Cmp(CmpOp::Le, a),
-                NumPred::Cmp(CmpOp::Gt, b)
-            ].into())))
+            let pred = match (bound_of(&a, &base)?, bound_of(&b, &base)?) {
+                (Bound::Int(a), Bound::Int(b)) => Pred::Int(NumPred::half_open(a, b)),
+                (Bound::Float(a), Bound::Float(b)) => Pred::Num(NumPred::half_open(
+                    DukaFloatWrapper::from(a),
+                    DukaFloatWrapper::from(b),
+                )),
+                _ => unreachable!("both bounds follow one base type"),
+            };
+            pat_of(base, pred)
         },
 
         #[duka_builtin(doc = "Numbers greater than N", count = 2)]

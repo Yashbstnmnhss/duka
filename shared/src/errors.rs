@@ -501,7 +501,7 @@ impl From<DukaSemanticError> for DukaErrorKind {
 
 #[derive(Debug, Clone, PartialEq, ThatError)]
 pub enum DukaParserError {
-    #[error("Expected end")]
+    #[error("Expected end of file")]
     ShouldBeEnd,
     #[error("Got invalid attribute \"{}\" when parsing: {}")]
     InvalidAttribute(Box<str>, Box<str>),
@@ -592,12 +592,15 @@ pub enum DukaMacroError {
     UnknownBuiltinMacro(Box<str>),
     #[error("Unexpected token in macro: expected {}")]
     UnexpectedToken(Box<str>),
+    #[error("No \"ifdef\" for this else block")]
+    SingleElse,
 }
 impl DukaMacroError {
     pub fn get_help(&self) -> String {
         match self {
+            DukaMacroError::SingleElse => "An \"^#else\" needs a \"^#ifdef\" ahead of it".to_owned(),
             DukaMacroError::Custom(_) => "An error occurred inside this macro".to_owned(),
-            DukaMacroError::InvalidMacroBody => "Starts with '->' and ends with ';' to define single line macro, or use '#^enifed' to end the multiple line macro".to_string(),
+            DukaMacroError::InvalidMacroBody => "Starts with '->' and ends with ';' to define single line macro, or use '^#end' to end the multiple line macro".to_string(),
             DukaMacroError::InvalidInputParameters(count) => {
                 format!("This macro requires at least {count} parameters")
             }

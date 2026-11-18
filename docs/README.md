@@ -89,7 +89,7 @@ solution = logic! { query  }
 
 Inspired by the spectacular feature "Static Reflection" in C++26, (in particular its beautiful symbols as well as syntax) I made this essential decision that **Static Replacement is bound to be introduced in duka**
 
-Back to the point, so now you can get tokens and store them by operator `^#` and keyword `define` (`enifed`) and `undef` (remove a defined macro)
+Back to the point, so now you can get tokens and store them by operator `^#` and keyword `define` (`end`) and `undef` (remove a defined macro)
 
 This will be processed in lexer time, which means its replacement works with tokens as basic unit
 
@@ -102,14 +102,14 @@ a = [:PI:]
 ```
 
 The `->` will just capture tokens until `;` in default
-To capture more tokens, remove arrow and use `^#enifed` to mark the end
+To capture more tokens, remove arrow and use `^#end` to mark the end
 
 Replacement variables are supported in macro, it will automatically match identifier starting with `$` symbol
 
 ```cpp
 ^#define MAX(a, b)
 if $a >= $b then $a else $b end
-^#enifed
+^#end
 ```
 
 The `[:MAX(1, 2):]` will be replaced by `if 1 >= 2 then 1 else 2 end`

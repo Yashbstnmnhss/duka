@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+use duka_syntax::{
+    GreenBuilder, KIND_CHUNK, KIND_STMT, KIND_TOKEN_BASE, KIND_TRIVIA, Kind, SyntaxTree, TextRange,
+};
+
 use ast::{
     AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, FunctionSig, If,
     IfClause, Linq, LinqClause, Match, MatchClause, Name, Node, NodeKind, ObjectDef,
@@ -247,6 +251,9 @@ pub struct Parser<T> {
     chunk_head_end: Option<Span>,
 
     depth: usize,
+    saving_mode: bool,
+    saved: Vec<Token>,
+    emitter: Option<SyntaxEmitter>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,12 +269,112 @@ struct ParserCheckpoint {
 #[derive(Debug, Clone)]
 pub struct IncrementalParseCache {
     nodes: Vec<Stmt>,
+    errors: Vec<DukaSpannedError>,
+    error_indices: Vec<usize>,
     checkpoints: Vec<ParserCheckpoint>,
     logic: LogicDatabase,
     config: DukaParserConfig,
     safe: bool,
     chunk_attrs: Attrs,
     chunk_head_end: Option<Span>,
+    tree: Option<SyntaxTree>,
+}
+
+fn token_kind_code(kind: &TokenKind) -> Kind {
+    let mut hash: u32 = 0;
+    for byte in kind.name().bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+    }
+    KIND_TOKEN_BASE + (hash % 4096) as Kind
+}
+
+#[derive(Debug, Clone)]
+enum EmitEvent {
+    Token { kind: Kind, range: TextRange },
+    Start { kind: Kind },
+    Finish,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SyntaxEmitter {
+    events: Vec<EmitEvent>,
+}
+
+impl SyntaxEmitter {
+    fn token(&mut self, kind: Kind, range: TextRange) {
+        self.events.push(EmitEvent::Token { kind, range });
+    }
+
+    fn start(&mut self, kind: Kind) {
+        self.events.push(EmitEvent::Start { kind });
+    }
+
+    fn finish(&mut self) {
+        self.events.push(EmitEvent::Finish);
+    }
+
+    fn into_tree(self, source: &str) -> SyntaxTree {
+        let mut offsets: Vec<usize> = source.char_indices().map(|(index, _)| index).collect();
+        offsets.push(source.len());
+        let total = offsets.len().saturating_sub(1) as u32;
+        let slice = |range: TextRange| {
+            let from = offsets
+                .get(range.start.get() as usize)
+                .copied()
+                .unwrap_or(source.len());
+            let to = offsets
+                .get(range.end.get() as usize)
+                .copied()
+                .unwrap_or(source.len())
+                .min(source.len());
+            source.get(from..to).unwrap_or("")
+        };
+        let mut builder = GreenBuilder::new(KIND_CHUNK);
+        let mut cursor = 0u32;
+        for event in self.events {
+            match event {
+                EmitEvent::Start { kind } => builder.start_node(kind),
+                EmitEvent::Finish => builder.finish_node(),
+                EmitEvent::Token { kind, range } => {
+                    if range.end.get() <= cursor {
+                        continue;
+                    }
+                    if range.start.get() > cursor {
+                        builder.token(
+                            KIND_TRIVIA,
+                            slice(TextRange::new(cursor, range.start.get())),
+                        );
+                    }
+                    builder.token(
+                        kind,
+                        slice(TextRange::new(
+                            range.start.get().max(cursor),
+                            range.end.get(),
+                        )),
+                    );
+                    cursor = range.end.get();
+                }
+            }
+        }
+        if cursor < total {
+            builder.token(KIND_TRIVIA, slice(TextRange::new(cursor, total)));
+        }
+        SyntaxTree {
+            root: builder.finish(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl IncrementalParseCache {
+    pub fn is_safe(&self) -> bool {
+        self.safe
+    }
+
+    #[cfg(test)]
+    pub fn syntax_tree(&self) -> Option<&SyntaxTree> {
+        self.tree.as_ref()
+    }
 }
 
 #[derive(Debug)]
@@ -299,6 +406,9 @@ impl Parser<Token> {
             chunk_attrs: [].into(),
             chunk_head_end: None,
             depth: 0,
+            saved: vec![],
+            saving_mode: false,
+            emitter: None,
         }
     }
 
@@ -420,16 +530,27 @@ impl Parser<Token> {
         }
 
         // A leading identifier may be the lvalue of an assignment statement
-        if matches!(first, TokenKind::Ident(..)) && self.looks_like_assignment()? {
+        if (matches!(first, TokenKind::Ident(..)) && self.looks_like_assignment()?)
+            || matches!(first, TokenKind::Type)
+        {
             let stmt = must!(self.stmt())?;
             self.no_more()?;
             return Ok(ExprOrStmt::Stmt(stmt));
         }
 
-        if let Some(expr) = self.expr_inner(false)? {
+        self.saving_mode = true;
+        if let Ok(Some(expr)) = self.expr_inner(false) {
+            self.saving_mode = false;
+            self.saved.clear();
+
             self.no_more()?;
             Ok(ExprOrStmt::Expr(expr))
         } else {
+            self.saving_mode = false;
+            for tk in std::mem::take(&mut self.saved) {
+                self.tokens.rollback(tk);
+            }
+
             let stmt = must!(self.stmt())?;
             self.no_more()?;
             Ok(ExprOrStmt::Stmt(stmt))
@@ -592,6 +713,18 @@ impl Parser<Token> {
         })
     }
 
+    fn emit_start(&mut self, kind: Kind) {
+        if let Some(emitter) = self.emitter.as_mut() {
+            emitter.start(kind);
+        }
+    }
+
+    fn emit_finish(&mut self) {
+        if let Some(emitter) = self.emitter.as_mut() {
+            emitter.finish();
+        }
+    }
+
     fn skip_to_sync(&mut self, retains: &[TokenKind]) -> Result<bool, DukaSpannedError> {
         loop {
             let tk = &self.peek_token(0)?.0;
@@ -605,6 +738,31 @@ impl Parser<Token> {
         }
     }
 
+    fn recover_error(&mut self, stmts: &mut Vec<Stmt>, retains: &[TokenKind]) -> bool {
+        let from = self.current_span;
+        match self.skip_to_sync(retains) {
+            Ok(true) => {
+                stmts.push(Node(NodeKind::Empty, from + self.current_span));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn note_error(
+    errors: &mut Vec<DukaSpannedError>,
+    indices: &mut Option<&mut Vec<usize>>,
+    at: usize,
+    error: DukaSpannedError,
+) {
+    if let Some(indices) = indices.as_deref_mut() {
+        indices.push(at);
+    }
+    errors.push(error);
+}
+
+impl Parser<Token> {
     fn checkpoint(&self) -> ParserCheckpoint {
         ParserCheckpoint {
             token_index: self.token_index,
@@ -627,15 +785,21 @@ impl Parser<Token> {
         errors: &mut Vec<DukaSpannedError>,
         max_errors: usize,
         mut checkpoints: Option<&mut Vec<ParserCheckpoint>>,
+        mut error_indices: Option<&mut Vec<usize>>,
     ) -> Option<Block> {
         let mut stmts = vec![];
         loop {
             if errors.len() >= max_errors {
-                errors.push(DukaSpannedError::new(
-                    DukaParserError::TooManyErrors(max_errors).into(),
-                    self.current_span,
-                    self.source_info.clone(),
-                ));
+                note_error(
+                    errors,
+                    &mut error_indices,
+                    stmts.len(),
+                    DukaSpannedError::new(
+                        DukaParserError::TooManyErrors(max_errors).into(),
+                        self.current_span,
+                        self.source_info.clone(),
+                    ),
+                );
                 return None;
             }
             let next_kind = self
@@ -651,58 +815,76 @@ impl Parser<Token> {
             if let Some(checkpoints) = checkpoints.as_deref_mut() {
                 checkpoints.push(self.checkpoint());
             }
+            self.emit_start(KIND_STMT);
 
             // a `return` ends here only if what follows can begin the next
             // statement; otherwise the value list ran into something that is
             // neither, and the block is reported on and resynced from
             if next_kind == TokenKind::Return {
                 let Ok(_) = self.next_token() else {
+                    self.emit_finish();
                     return Some(Block(stmts.into()));
                 };
                 match self.ret_stmt() {
                     Ok(ret) => match self.next_starts_statement(consumed, retains) {
                         Ok(true) => {
+                            self.emit_finish();
                             stmts.push(ret);
                             continue;
                         }
-                        Ok(false) => errors.push(self.unexpected_statement_token()),
-                        Err(e) => errors.push(e),
+                        Ok(false) => note_error(
+                            errors,
+                            &mut error_indices,
+                            stmts.len(),
+                            self.unexpected_statement_token(),
+                        ),
+                        Err(e) => note_error(errors, &mut error_indices, stmts.len(), e),
                     },
-                    Err(e) => errors.push(e),
+                    Err(e) => note_error(errors, &mut error_indices, stmts.len(), e),
                 }
-                match self.skip_to_sync(retains) {
-                    Ok(true) => continue,
-                    _ => return Some(Block(stmts.into())),
+                self.emit_finish();
+                if !self.recover_error(&mut stmts, retains) {
+                    return Some(Block(stmts.into()));
                 }
+                continue;
             }
 
             match self.stmt() {
-                Ok(Some(stmt)) => stmts.push(stmt),
+                Ok(Some(stmt)) => {
+                    self.emit_finish();
+                    stmts.push(stmt)
+                }
                 Ok(None) => {
                     // `stmt` declined without consuming anything, so the loop
                     // must not spin on the same token: report it and resync
                     let Ok((kind, _)) = self.peek_token(0) else {
+                        self.emit_finish();
                         return Some(Block(stmts.into()));
                     };
-                    errors.push(DukaSpannedError::new(
-                        DukaParserError::UnexpectedToken {
-                            got: kind.name().into(),
-                            expected: "statement".into(),
-                        }
-                        .into(),
-                        self.current_span,
-                        self.source_info.clone(),
-                    ));
-                    match self.skip_to_sync(retains) {
-                        Ok(true) => continue,
-                        _ => return Some(Block(stmts.into())),
+                    note_error(
+                        errors,
+                        &mut error_indices,
+                        stmts.len(),
+                        DukaSpannedError::new(
+                            DukaParserError::UnexpectedToken {
+                                got: kind.name().into(),
+                                expected: "statement".into(),
+                            }
+                            .into(),
+                            self.current_span,
+                            self.source_info.clone(),
+                        ),
+                    );
+                    self.emit_finish();
+                    if !self.recover_error(&mut stmts, retains) {
+                        return Some(Block(stmts.into()));
                     }
                 }
                 Err(e) => {
-                    errors.push(e);
-                    match self.skip_to_sync(retains) {
-                        Ok(true) => continue,
-                        _ => return Some(Block(stmts.into())),
+                    note_error(errors, &mut error_indices, stmts.len(), e);
+                    self.emit_finish();
+                    if !self.recover_error(&mut stmts, retains) {
+                        return Some(Block(stmts.into()));
                     }
                 }
             }
@@ -4317,9 +4499,20 @@ impl Parser<Token> {
                 .inspect(|t| {
                     self.token_index += 1;
                     self.current_span = t.1;
+                    if let Some(emitter) = self.emitter.as_mut() {
+                        emitter.token(
+                            token_kind_code(&t.0),
+                            TextRange::new(t.1.start.at_char, t.1.end.at_char),
+                        );
+                    }
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
+
             if !matches!(token.0, TokenKind::Comment(..)) {
+                if self.saving_mode {
+                    self.saved.push(token.clone());
+                }
+
                 break Ok(token);
             }
         }
@@ -4333,9 +4526,20 @@ impl Parser<Token> {
                 .inspect(|t| {
                     self.token_index += 1;
                     self.current_span = t.1;
+                    if let Some(emitter) = self.emitter.as_mut() {
+                        emitter.token(
+                            token_kind_code(&t.0),
+                            TextRange::new(t.1.start.at_char, t.1.end.at_char),
+                        );
+                    }
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
+
             if !token.0.is_comment() {
+                if self.saving_mode {
+                    self.saved.push(token.clone());
+                }
+
                 break Ok(token);
             }
         }
@@ -4389,6 +4593,7 @@ impl Parser<Token> {
             &mut errors,
             MAX_PARSE_ERRORS,
             None,
+            None,
         );
         match block {
             Some(block) => {
@@ -4421,6 +4626,8 @@ impl Parser<Token> {
         edit_at_char: Option<u32>,
     ) -> (DukaChunk, Vec<DukaSpannedError>, IncrementalParseCache) {
         let config_snapshot = config.clone();
+        let source = String::from_utf8_lossy(&stream.source_info.source).into_owned();
+        let old_tree = previous.as_ref().and_then(|cache| cache.tree.clone());
         let start_index = previous
             .as_ref()
             .filter(|cache| {
@@ -4455,10 +4662,21 @@ impl Parser<Token> {
                     .map(|cache| cache.checkpoints[..index].to_vec())
             })
             .unwrap_or_default();
+        let mut errors: Vec<DukaSpannedError> = vec![];
+        let mut error_indices: Vec<usize> = vec![];
         let mut prefix = vec![];
         let (mut parser, resumed, collect_head) =
             if let (Some(index), Some(previous)) = (start_index, previous) {
                 let checkpoint = previous.checkpoints[index].clone();
+                for (error, at) in previous
+                    .errors
+                    .iter()
+                    .zip(previous.error_indices.iter())
+                    .filter(|(_, at)| **at < index)
+                {
+                    errors.push(error.clone());
+                    error_indices.push(*at);
+                }
                 let tokens = stream.from_index(checkpoint.token_index);
                 let mut parser = Self::from_tokens(tokens, config);
                 parser.token_index = checkpoint.token_index;
@@ -4482,9 +4700,18 @@ impl Parser<Token> {
             } else {
                 (Self::new(stream, config), false, true)
             };
+        let mut emitter = SyntaxEmitter::default();
+        if let (Some(tree), Some(at)) = (old_tree, edit_at_char) {
+            for (token, range) in tree.tokens() {
+                if range.end.get() <= at {
+                    emitter.token(token.kind, range);
+                }
+            }
+        }
+        parser.emitter = Some(emitter);
         let start_span = parser.current_span;
-        let mut errors = vec![];
         if collect_head && let Err(e) = parser.chunk_doc_run() {
+            error_indices.push(0);
             errors.push(e);
         }
         let block = parser.block_inner_recovery(
@@ -4493,6 +4720,7 @@ impl Parser<Token> {
             &mut errors,
             MAX_PARSE_ERRORS,
             Some(&mut checkpoints),
+            Some(&mut error_indices),
         );
         let (block, span) = if let Some(block) = block {
             prefix.extend(block.0);
@@ -4511,6 +4739,10 @@ impl Parser<Token> {
                 if resumed { Span::EMPTY } else { start_span },
             )
         };
+        let tree = parser
+            .emitter
+            .take()
+            .map(|emitter| emitter.into_tree(&source));
         let chunk = DukaChunk {
             block,
             span,
@@ -4520,12 +4752,15 @@ impl Parser<Token> {
         };
         let cache = IncrementalParseCache {
             nodes: prefix,
-            safe: errors.is_empty() && checkpoints.len() == chunk.block.0.len() + 1,
+            errors: errors.clone(),
+            error_indices,
+            safe: checkpoints.len() == chunk.block.0.len() + 1,
             checkpoints,
             logic: (*chunk.logic).clone(),
             config: config_snapshot,
             chunk_attrs: chunk.attrs.clone(),
             chunk_head_end: parser.chunk_head_end,
+            tree,
         };
         (chunk, errors, cache)
     }

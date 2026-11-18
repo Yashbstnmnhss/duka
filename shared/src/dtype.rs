@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Display,
+    hash::Hash,
     ops::{BitAnd, BitOr},
     str::Chars,
 };
@@ -12,7 +13,7 @@ use crate::{
     constants::{ckind, ctype},
     effects::EffectSet,
     utils::{MultiPeekable, MultiPeekableExtension},
-    value::{ConstValue, DukaFloat, DukaInt},
+    value::{ConstValue, DukaFloat, DukaFloatWrapper, DukaInt},
 };
 
 /// The container skeleton both contexts (value-context & type-context) are built from.
@@ -320,15 +321,39 @@ pub struct Pattern {
     pub pred: Pred,
 }
 
+impl Pattern {
+    #[inline]
+    pub fn accepts(&self, other: &Pattern) -> bool {
+        self.base.accepts(&other.base) && self.pred.accepts(&other.pred)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Pred {
-    Num(NumPred),
+    Num(NumPred<DukaFloatWrapper>),
+    Int(NumPred<DukaInt>),
     Text(TextPred),
+}
+
+impl Pred {
+    pub fn accepts(&self, other: &Pred) -> bool {
+        match (self, other) {
+            (Self::Num(p), Self::Num(p2)) => p.accepts(p2),
+            (Self::Int(p), Self::Int(p2)) => p.accepts(p2),
+            (Self::Num(p), Self::Int(p2)) => {
+                p.accepts(&p2.clone().map(|i| DukaFloatWrapper::from(i as DukaFloat)))
+            }
+            (Self::Int(_), Self::Num(_)) => false,
+            (Self::Text(p), Self::Text(p2)) => p.accepts(p2),
+            _ => false,
+        }
+    }
 }
 
 impl Display for Pred {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Pred::Int(int_pred) => write!(f, "{int_pred}"),
             Pred::Num(num_pred) => write!(f, "{num_pred}"),
             Pred::Text(text_pred) => write!(f, "{text_pred}"),
         }
@@ -361,35 +386,582 @@ impl Display for CmpOp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum NumPred {
-    Cmp(CmpOp, ConstValue),
-    And(Box<[NumPred]>),
-    Or(Box<[NumPred]>),
-    Not(Box<NumPred>),
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumSet<N: PartialOrd + Copy> {
+    ranges: Vec<(Option<N>, Option<N>)>,
+    singles: Vec<N>,
 }
 
-impl Display for NumPred {
+impl<N: PartialOrd + Copy + Hash> Hash for NumSet<N> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ranges.hash(state);
+        self.singles.hash(state);
+    }
+}
+
+impl<N: PartialOrd + Copy> Default for NumSet<N> {
+    fn default() -> Self {
+        Self::empty_set()
+    }
+}
+
+impl<N: PartialOrd + Copy> NumSet<N> {
+    pub fn accepts(&self, other: &Self) -> bool {
+        other.singles.iter().all(|s| self.contains(s))
+            && other.ranges.iter().all(|(s, e)| {
+                self.ranges
+                    .iter()
+                    .any(|(s2, e2)| Self::le_low(*s2, *s) && Self::ge_high(*e2, *e))
+            })
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.ranges.is_empty() && self.singles.is_empty()
+    }
+
+    fn le_low(x: Option<N>, y: Option<N>) -> bool {
+        match (x, y) {
+            (Some(x), Some(y)) => x <= y,
+            (None, _) => true,
+            (Some(_), None) => false,
+        }
+    }
+
+    fn ge_high(x: Option<N>, y: Option<N>) -> bool {
+        match (x, y) {
+            (Some(x), Some(y)) => x >= y,
+            (None, _) => true,
+            (Some(_), None) => false,
+        }
+    }
+
+    fn lt_low(x: Option<N>, y: Option<N>) -> bool {
+        match (x, y) {
+            (Some(x), Some(y)) => x < y,
+            (None, Some(_)) => true,
+            _ => false,
+        }
+    }
+
+    fn lt_high(x: Option<N>, y: Option<N>) -> bool {
+        match (x, y) {
+            (Some(x), Some(y)) => x < y,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    fn open_nonempty(a: Option<N>, b: Option<N>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a < b,
+            _ => true,
+        }
+    }
+
+    fn max_low(a: Option<N>, b: Option<N>) -> Option<N> {
+        match (a, b) {
+            (None, y) | (y, None) => y,
+            (Some(a), Some(b)) => Some(if a < b { b } else { a }),
+        }
+    }
+
+    fn min_high(a: Option<N>, b: Option<N>) -> Option<N> {
+        match (a, b) {
+            (None, y) | (y, None) => y,
+            (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+        }
+    }
+}
+
+impl<N: PartialOrd + Copy + Display> Display for NumSet<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NumPred::Cmp(op, cv) => write!(f, "{op} {cv}"),
-            NumPred::And(ps) => write!(
-                f,
-                "all({})",
-                ps.iter()
-                    .map(|i| i.to_string())
+        if self.is_empty() {
+            return write!(f, "∅");
+        }
+
+        let low = |n: Option<N>| match n {
+            Some(n) => n.to_string(),
+            None => "-∞".to_owned(),
+        };
+        let high = |n: Option<N>| match n {
+            Some(n) => n.to_string(),
+            None => "+∞".to_owned(),
+        };
+        let has_single = |n: Option<N>| n.is_some_and(|n| self.singles.iter().any(|&s| s == n));
+        let mut parts = Vec::with_capacity(self.ranges.len() + 1);
+        let mut used = vec![false; self.singles.len()];
+
+        for &(a, b) in &self.ranges {
+            let left = has_single(a);
+            let right = has_single(b);
+            let s = match (left, right) {
+                (true, true) => format!("[{}, {}]", low(a), high(b)),
+                (true, false) => format!("[{}, {})", low(a), high(b)),
+                (false, true) => format!("({}, {}]", low(a), high(b)),
+                (false, false) => format!("({}, {})", low(a), high(b)),
+            };
+            parts.push(s);
+            if let Some(a) = a {
+                if left {
+                    if let Some(i) = self.singles.iter().position(|&x| x == a) {
+                        used[i] = true;
+                    }
+                }
+            }
+            if let Some(b) = b {
+                if right {
+                    if let Some(i) = self.singles.iter().position(|&x| x == b) {
+                        used[i] = true;
+                    }
+                }
+            }
+        }
+
+        let rest: Vec<N> = self
+            .singles
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !used[*i])
+            .map(|(_, &n)| n)
+            .collect();
+        if !rest.is_empty() {
+            parts.push(format!(
+                "{{{}}}",
+                rest.iter()
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
-            ),
-            NumPred::Or(ps) => write!(
-                f,
-                "any({})",
-                ps.iter()
-                    .map(|i| i.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            NumPred::Not(ps) => write!(f, "not({ps})"),
+            ));
+        }
+
+        write!(f, "{}", parts.join(" ∪ "))
+    }
+}
+
+impl<N: PartialOrd + Copy> NumSet<N> {
+    /// ∅
+    pub fn empty_set() -> Self {
+        Self {
+            singles: vec![],
+            ranges: vec![],
+        }
+    }
+
+    pub fn top() -> Self {
+        Self {
+            ranges: vec![(None, None)],
+            singles: vec![],
+        }
+    }
+
+    /// `(N, N)`
+    pub fn add_open(&mut self, r: (N, N)) {
+        if r.0 < r.1 {
+            self.ranges.push((Some(r.0), Some(r.1)));
+            self.normalize();
+        }
+    }
+    /// `[N, N)`
+    pub fn add_half_open(&mut self, r: (N, N)) {
+        if r.0 < r.1 {
+            self.ranges.push((Some(r.0), Some(r.1)));
+            self.singles.push(r.0);
+            self.normalize();
+        }
+    }
+    /// `[N, N]`
+    pub fn add_closed(&mut self, r: (N, N)) {
+        if r.0 <= r.1 {
+            self.ranges.push((Some(r.0), Some(r.1)));
+            self.singles.push(r.0);
+            self.singles.push(r.1);
+            self.normalize();
+        }
+    }
+    ///`{N}`
+    pub fn add_single(&mut self, n: N) {
+        self.singles.push(n);
+        self.normalize();
+    }
+
+    pub fn contains<O>(&self, n: &O) -> bool
+    where
+        N: PartialOrd<O>,
+    {
+        self.singles.iter().any(|s| s == n)
+            || self
+                .ranges
+                .iter()
+                .any(|(a, b)| a.as_ref().is_none_or(|a| a < n) && b.as_ref().is_none_or(|b| b > n))
+    }
+
+    pub fn remove_single(&mut self, n: N) {
+        self.singles.retain(|&x| x != n);
+        let mut out = Vec::with_capacity(self.ranges.len());
+        for (a, b) in self.ranges.drain(..) {
+            if Self::lt_low(a, Some(n)) && Self::lt_high(Some(n), b) {
+                out.push((a, Some(n)));
+                out.push((Some(n), b));
+            } else {
+                out.push((a, b));
+            }
+        }
+        self.ranges = out;
+    }
+
+    pub fn remove_range(&mut self, (a, b): (N, N)) {
+        self.cut((Some(a), Some(b)));
+    }
+
+    fn cut(&mut self, (a, b): (Option<N>, Option<N>)) {
+        if !Self::open_nonempty(a, b) {
+            return;
+        }
+        self.singles
+            .retain(|n| !(a.map_or(true, |a| a < *n) && b.map_or(true, |b| *n < b)));
+        let mut out = Vec::with_capacity(self.ranges.len());
+        for (s, e) in self.ranges.drain(..) {
+            let left = e.zip(a).is_some_and(|(e, a)| e <= a);
+            let right = s.zip(b).is_some_and(|(s, b)| s >= b);
+            if left || right {
+                out.push((s, e));
+            } else {
+                if Self::lt_low(s, a) {
+                    out.push((s, a));
+                    self.singles.extend(a);
+                }
+                if Self::lt_high(b, e) {
+                    out.push((b, e));
+                    self.singles.extend(b);
+                }
+            }
+        }
+        self.ranges = out;
+        self.normalize();
+    }
+
+    pub fn union(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        out.ranges.extend(other.ranges.iter().cloned());
+        out.singles.extend(other.singles.iter().cloned());
+        out.normalize();
+        out
+    }
+
+    pub fn intersect(&self, other: &Self) -> Self {
+        let mut out = Self::empty_set();
+        for &(a1, b1) in &self.ranges {
+            for &(a2, b2) in &other.ranges {
+                let lo = Self::max_low(a1, a2);
+                let hi = Self::min_high(b1, b2);
+                if Self::open_nonempty(lo, hi) {
+                    out.ranges.push((lo, hi));
+                }
+            }
+        }
+
+        for &n in &self.singles {
+            if other.contains(&n) {
+                out.singles.push(n);
+            }
+        }
+        for &n in &other.singles {
+            if self.contains(&n) {
+                out.singles.push(n);
+            }
+        }
+        out.normalize();
+        out
+    }
+
+    pub fn difference(&self, other: &Self) -> Self {
+        let mut out = self.clone();
+        for &n in &other.singles {
+            out.remove_single(n);
+        }
+        for &(a, b) in &other.ranges {
+            out.cut((a, b));
+        }
+        out
+    }
+
+    pub fn map<M: PartialOrd + Copy>(self, f: impl Fn(N) -> M) -> NumSet<M> {
+        let mut out = NumSet {
+            ranges: self
+                .ranges
+                .iter()
+                .map(|(a, b)| (a.map(|n| f(n)), b.map(|n| f(n))))
+                .collect(),
+            singles: self.singles.iter().map(|n| f(*n)).collect(),
+        };
+        out.normalize();
+        out
+    }
+
+    pub fn try_map<M: PartialOrd + Copy>(
+        &self,
+        f: impl Fn(N) -> Option<M> + Copy,
+        decreasing: bool,
+    ) -> Option<NumSet<M>> {
+        let mut out = NumSet {
+            ranges: vec![],
+            singles: vec![],
+        };
+        let map_end = |v: Option<N>| match v {
+            None => Some(None),
+            Some(n) => f(n).map(Some),
+        };
+        for &(a, b) in &self.ranges {
+            let (lo, hi) = if decreasing {
+                (map_end(b)?, map_end(a)?)
+            } else {
+                (map_end(a)?, map_end(b)?)
+            };
+            out.ranges.push((lo, hi));
+        }
+        for &n in &self.singles {
+            out.singles.push(f(n)?);
+        }
+        out.normalize();
+        Some(out)
+    }
+
+    fn normalize(&mut self) {
+        self.ranges
+            .sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged: Vec<(Option<N>, Option<N>)> = Vec::with_capacity(self.ranges.len());
+        for (s, e) in self.ranges.drain(..) {
+            if let Some((_, pe)) = merged.last_mut() {
+                let covered = pe.is_none() || Self::lt_low(s, *pe);
+                if covered {
+                    if pe.is_some() && Self::lt_high(*pe, e) {
+                        *pe = e;
+                    }
+                    continue;
+                }
+            }
+            merged.push((s, e));
+        }
+        self.ranges = merged;
+        let mut seen = Vec::with_capacity(self.singles.len());
+        for n in self.singles.drain(..) {
+            let inside = self
+                .ranges
+                .iter()
+                .any(|&(a, b)| Self::lt_low(a, Some(n)) && Self::lt_high(Some(n), b));
+            if inside {
+                continue;
+            }
+            if !seen.iter().any(|&x| x == n) {
+                seen.push(n);
+            }
+        }
+        self.singles = seen;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+pub struct NumPred<N: PartialOrd + Copy> {
+    include: Option<NumSet<N>>,
+    exclude: Option<NumSet<N>>,
+}
+
+// We ensure
+impl<N: PartialOrd + Copy> Eq for NumPred<N> {}
+
+impl<N: PartialOrd + Copy> Default for NumPred<N> {
+    fn default() -> Self {
+        Self {
+            include: None,
+            exclude: None,
+        }
+    }
+}
+
+impl<N: PartialOrd + Copy> NumPred<N> {
+    pub fn accepts(&self, other: &Self) -> bool {
+        self.satisfying_set().accepts(&other.satisfying_set())
+    }
+
+    pub fn include_single(&mut self, n: N) {
+        self.include
+            .get_or_insert(NumSet::empty_set())
+            .add_single(n);
+    }
+    /// `(a, b)`
+    pub fn include_open(&mut self, a: N, b: N) {
+        self.include
+            .get_or_insert(NumSet::empty_set())
+            .add_open((a, b));
+    }
+    /// `[a, b)`
+    pub fn include_half_open(&mut self, a: N, b: N) {
+        self.include
+            .get_or_insert(NumSet::empty_set())
+            .add_half_open((a, b));
+    }
+    /// `[a, b]`
+    pub fn include_closed(&mut self, a: N, b: N) {
+        self.include
+            .get_or_insert(NumSet::empty_set())
+            .add_closed((a, b));
+    }
+
+    pub fn exclude_single(&mut self, n: N) {
+        self.exclude
+            .get_or_insert(NumSet::empty_set())
+            .add_single(n);
+    }
+    pub fn exclude_open(&mut self, a: N, b: N) {
+        self.exclude
+            .get_or_insert(NumSet::empty_set())
+            .add_open((a, b));
+    }
+    pub fn exclude_half_open(&mut self, a: N, b: N) {
+        self.exclude
+            .get_or_insert(NumSet::empty_set())
+            .add_half_open((a, b));
+    }
+    pub fn exclude_closed(&mut self, a: N, b: N) {
+        self.exclude
+            .get_or_insert(NumSet::empty_set())
+            .add_closed((a, b));
+    }
+
+    pub fn contains<O>(&self, o: &O) -> bool
+    where
+        N: PartialOrd<O>,
+    {
+        let included = self.include.as_ref().is_none_or(|i| i.contains(o));
+        included && !self.exclude.as_ref().is_some_and(|e| e.contains(o))
+    }
+    pub fn cmp(op: CmpOp, n: N) -> Self {
+        let mut pred = Self::default();
+        let set = match op {
+            CmpOp::Ne => pred.exclude.get_or_insert_with(NumSet::empty_set),
+            _ => pred.include.get_or_insert_with(NumSet::empty_set),
+        };
+        match op {
+            CmpOp::Gt => set.ranges.push((Some(n), None)),
+            CmpOp::Ge => {
+                set.ranges.push((Some(n), None));
+                set.singles.push(n);
+            }
+            CmpOp::Lt => set.ranges.push((None, Some(n))),
+            CmpOp::Le => {
+                set.ranges.push((None, Some(n)));
+                set.singles.push(n);
+            }
+            CmpOp::Eq => set.singles.push(n),
+            CmpOp::Ne => set.singles.push(n),
+        }
+        set.normalize();
+        pred
+    }
+
+    /// `[a, b)`
+    pub fn half_open(a: N, b: N) -> Self {
+        let mut pred = Self::default();
+        pred.include
+            .get_or_insert_with(NumSet::empty_set)
+            .add_half_open((a, b));
+        pred
+    }
+
+    fn satisfying_set(&self) -> NumSet<N> {
+        match (&self.include, &self.exclude) {
+            (None, None) => NumSet::top(),
+            (None, Some(e)) => NumSet::top().difference(e),
+            (Some(i), None) => i.clone(),
+            (Some(i), Some(e)) => i.difference(e),
+        }
+    }
+
+    pub fn map<M: PartialOrd + Copy>(self, f: impl Fn(N) -> M) -> NumPred<M> {
+        NumPred {
+            include: self.include.map(|s| s.map(&f)),
+            exclude: self.exclude.map(|s| s.map(&f)),
+        }
+    }
+
+    pub fn try_map<M: PartialOrd + Copy>(
+        &self,
+        f: impl Fn(N) -> Option<M> + Copy,
+        decreasing: bool,
+    ) -> Option<NumPred<M>> {
+        let convert = |s: Option<&NumSet<N>>| match s {
+            None => Some(None),
+            Some(s) => s.try_map(f, decreasing).map(Some),
+        };
+        Some(NumPred {
+            include: convert(self.include.as_ref())?,
+            exclude: convert(self.exclude.as_ref())?,
+        })
+    }
+
+    /// 合取:`include` 取交,`exclude` 取并
+    pub fn and(self, other: Self) -> Self {
+        let include = match (self.include, other.include) {
+            (None, i) | (i, None) => i,
+            (Some(a), Some(b)) => Some(a.intersect(&b)),
+        };
+        let exclude = match (self.exclude, other.exclude) {
+            (None, e) | (e, None) => e,
+            (Some(a), Some(b)) => Some(a.union(&b)),
+        };
+        Self { include, exclude }
+    }
+
+    /// 析取:满足集并起来,再从 `include` 的并里挖出真正被排除的部分
+    pub fn or(self, other: Self) -> Self {
+        let set = self.satisfying_set().union(&other.satisfying_set());
+        let include = match (self.include, other.include) {
+            (None, _) | (_, None) => None,
+            (Some(a), Some(b)) => Some(a.union(&b)),
+        };
+        let exclude = match &include {
+            Some(i) => i.difference(&set),
+            None => NumSet::top().difference(&set),
+        };
+        Self {
+            include,
+            exclude: if exclude.is_empty() {
+                None
+            } else {
+                Some(exclude)
+            },
+        }
+    }
+
+    /// 取反:`∉E ↔ ∈E`、`∈I ↔ ∉I` 正好互换,一般情形是 `∉(I \ E)`
+    pub fn not(self) -> Self {
+        match (self.include, self.exclude) {
+            (None, Some(e)) => Self {
+                include: Some(e),
+                exclude: None,
+            },
+            (Some(i), None) => Self {
+                include: None,
+                exclude: Some(i),
+            },
+            (Some(i), Some(e)) => Self {
+                include: None,
+                exclude: Some(i.difference(&e)),
+            },
+            (None, None) => Self {
+                include: Some(NumSet::empty_set()),
+                exclude: None,
+            },
+        }
+    }
+}
+impl<N: PartialOrd + Copy + Display> Display for NumPred<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.include, &self.exclude) {
+            (None, None) => write!(f, "⊨"),
+            (None, Some(e)) => write!(f, "∉{}", e),
+            (Some(i), None) => write!(f, "∈{}", i),
+            (Some(i), Some(e)) => write!(f, "∈{} ∧ ∉{}", i, e),
         }
     }
 }
@@ -399,7 +971,7 @@ pub enum TextPred {
     Has(Box<str>),
     Starts(Box<str>),
     Ends(Box<str>),
-    Len(CmpOp, DukaInt),
+    Len(NumPred<DukaInt>),
     Regex(Box<str>),
     And(Box<[TextPred]>),
     Or(Box<[TextPred]>),
@@ -429,17 +1001,9 @@ impl Display for TextPred {
             TextPred::Has(s) => write!(f, "has(\"{s}\")"),
             TextPred::Starts(s) => write!(f, "starts(\"{s}\")"),
             TextPred::Ends(s) => write!(f, "ends(\"{s}\")"),
-            TextPred::Len(op, n) => write!(f, "# {op} {n}"),
+            TextPred::Len(np) => write!(f, "length({np})"),
             TextPred::Regex(reg) => write!(f, "regex(\"{reg}\")"),
         }
-    }
-}
-
-fn as_num(value: &ConstValue) -> Option<DukaFloat> {
-    match value {
-        ConstValue::Int(i) => Some(*i as DukaFloat),
-        ConstValue::Float(f) => Some(*f),
-        _ => None,
     }
 }
 
@@ -456,20 +1020,6 @@ impl CmpOp {
     }
 }
 
-impl NumPred {
-    pub fn check(&self, value: &ConstValue) -> bool {
-        match self {
-            NumPred::Cmp(op, rhs) => match (as_num(value), as_num(rhs)) {
-                (Some(l), Some(r)) => op.check(l, r),
-                _ => false,
-            },
-            NumPred::And(items) => items.iter().all(|i| i.check(value)),
-            NumPred::Or(items) => items.iter().any(|i| i.check(value)),
-            NumPred::Not(inner) => !inner.check(value),
-        }
-    }
-}
-
 impl TextPred {
     pub fn check(&self, text: &[u8]) -> bool {
         let s = std::str::from_utf8(text).unwrap_or_default();
@@ -477,7 +1027,7 @@ impl TextPred {
             TextPred::Has(part) => s.contains(&**part),
             TextPred::Starts(part) => s.starts_with(&**part),
             TextPred::Ends(part) => s.ends_with(&**part),
-            TextPred::Len(op, n) => op.check(s.chars().count() as f64, *n as f64),
+            TextPred::Len(pred) => pred.contains(&(s.chars().count() as DukaInt)),
             TextPred::Regex(source) => match crate::regex::compile(source) {
                 Ok(compiled) => crate::regex::match_str(&compiled, s)
                     .is_some_and(|m| m.start == 0 && m.end == s.len()),
@@ -488,12 +1038,52 @@ impl TextPred {
             TextPred::Not(inner) => !inner.check(text),
         }
     }
+
+    pub fn accepts(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::And(xs), _) => xs.iter().any(|x| x.accepts(other)),
+            (_, Self::And(xs)) => xs.iter().any(|y| self.accepts(y)),
+            (Self::Or(xs), Self::Or(ys)) => ys.iter().all(|y| xs.iter().any(|x| x.accepts(y))),
+            (Self::Or(xs), _) => xs.iter().any(|x| x.accepts(other)),
+            (_, Self::Or(xs)) => xs.iter().all(|y| self.accepts(y)),
+            (Self::Not(x), Self::Not(y)) => y.accepts(x),
+            (Self::Not(x), Self::Len(np)) => match &**x {
+                Self::Len(mp) => mp
+                    .satisfying_set()
+                    .intersect(&np.satisfying_set())
+                    .is_empty(),
+                _ => false,
+            },
+            (Self::Len(np), Self::Not(y)) => match &**y {
+                Self::Len(mp) => np
+                    .satisfying_set()
+                    .accepts(&mp.clone().not().satisfying_set()),
+                _ => false,
+            },
+            (Self::Has(a), Self::Has(b) | Self::Starts(b) | Self::Ends(b)) => b.contains(&**a),
+            (Self::Starts(a), Self::Starts(b)) => b.starts_with(&**a),
+            (Self::Ends(a), Self::Ends(b)) => b.ends_with(&**a),
+            (Self::Has(a) | Self::Starts(a) | Self::Ends(a), Self::Len(_)) => a.is_empty(),
+            (Self::Len(np), Self::Has(p) | Self::Starts(p) | Self::Ends(p)) => {
+                np.accepts(&NumPred::cmp(CmpOp::Ge, p.chars().count() as DukaInt))
+            }
+            (Self::Regex(a), Self::Regex(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl Pattern {
     pub fn check(&self, value: &ConstValue) -> bool {
         match (&self.pred, value) {
-            (Pred::Num(pred), _) => pred.check(value),
+            (Pred::Int(pred), ConstValue::Int(i)) => pred.contains(i),
+            (Pred::Int(pred), ConstValue::Float(f)) => pred.contains(&DukaFloatWrapper::from(*f)),
+            (Pred::Num(pred), ConstValue::Float(f)) => {
+                pred.contains::<DukaFloatWrapper>(&(*f).into())
+            }
+            (Pred::Num(pred), ConstValue::Int(i)) => {
+                pred.contains::<DukaFloatWrapper>(&(*i as DukaFloat).into())
+            }
             (Pred::Text(pred), ConstValue::String(text)) => pred.check(text),
             _ => false,
         }
@@ -1145,7 +1735,7 @@ impl<L: Display + PartialEq> Display for Ty<L> {
                 }
                 Ty::Never => ctype::NEV.to_owned(),
                 Ty::Brand(b) => format!("{} {}", b.base, b.label),
-                Ty::Pattern(p) => format!("{}*", p.base),
+                Ty::Pattern(p) => format!("{} {}", p.base, p.pred),
                 Ty::Ext(ext) => format!("{ext}"),
             }
         )
@@ -1301,6 +1891,15 @@ impl Type {
     /// ```
     pub fn accepts(&self, actual: &Type) -> bool {
         match self {
+            a if matches!(actual, Type::Union(_)) => match actual {
+                Type::Union(us) => us.iter().all(|m| a.accepts(m)),
+                _ => true,
+            },
+            Type::Pattern(pat) => match actual {
+                Type::Pattern(pat2) => pat.accepts(pat2),
+                Type::Literal(cv) => pat.check(cv),
+                _ => pat.base.accepts(actual.base()),
+            },
             Type::Brand(b) => {
                 return match actual {
                     Type::Any => true,
@@ -1309,30 +1908,9 @@ impl Type {
                     _ => false,
                 };
             }
-            Type::Pattern(p) => return p.base.accepts(actual.base()),
-            _ => {}
-        }
-        if matches!(actual, Type::Brand(_) | Type::Pattern(_)) {
-            return self.accepts(actual.base());
-        }
-        // `unknown` is the top: it takes every value and gives nothing back
-        if matches!(self, Type::Unknown) {
-            return true;
-        }
-        if matches!(actual, Type::Unknown) {
-            return matches!(self, Type::Any);
-        }
-        // `never` is the bottom: it takes nothing, whatever the value is
-        if matches!(self, Type::Never) {
-            return false;
-        }
-        // `any` is the escape hatch, and it runs both ways: a value whose type
-        // was written `any` goes where anything is wanted. `unknown` above is
-        // the one that does not -- that is the difference between them.
-        if matches!(actual, Type::Any) {
-            return true;
-        }
-        match self {
+            a if matches!(actual, Type::Brand(_) | Type::Pattern(_)) => a.accepts(actual.base()),
+            a if matches!(actual, Type::Unknown) => matches!(a, Type::Any),
+            Type::Unknown => true,
             Type::Never => false,
             Type::Any => true,
             Type::Function(None) => matches!(actual, Type::Function(..) | Type::Any),
@@ -1509,7 +2087,10 @@ impl Type {
             Type::Pattern(p) => {
                 return match cv {
                     Some(value) => p.check(value),
-                    None => p.base.accepts_value(actual.base(), None),
+                    None => match actual {
+                        Type::Pattern(other) => p.accepts(other),
+                        _ => p.base.accepts_value(actual.base(), None),
+                    },
                 };
             }
             Type::Brand(b) => {
@@ -1524,12 +2105,11 @@ impl Type {
             }
             _ => {}
         }
-        if matches!(self, Type::Unknown) {
-            return true;
-        }
+
         if matches!(actual, Type::Unknown) {
             return matches!(self, Type::Any);
         }
+
         match self {
             Type::Literal(lv) => match cv {
                 Some(cv) => lv == cv,
@@ -1550,7 +2130,7 @@ impl Type {
                 let mut visited = std::collections::HashSet::new();
                 rec_bisim(inner, actual, &mut visited)
             }
-            Type::Any => true,
+            ty if ty.is_top() => true,
             Type::Never => false,
             Type::Nil => matches!(actual, Type::Nil | Type::Any),
             other => other.accepts(actual),
@@ -1860,8 +2440,10 @@ impl Constraint {
 
 #[cfg(test)]
 mod tests {
-    use super::{Brand, CmpOp, FunctionType, Label, NumPred, Pattern, Pred, TextPred, Type, Units};
-    use crate::value::ConstValue;
+    use super::{
+        Brand, CmpOp, FunctionType, Label, NumPred, NumSet, Pattern, Pred, TextPred, Type, Units,
+    };
+    use crate::value::{ConstValue, DukaInt};
 
     #[test]
     fn accepts_subtyping() {
@@ -2201,32 +2783,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pattern_checks_the_value_when_it_is_known() {
-        let port = pat(
-            Type::Int,
-            Pred::Num(NumPred::And(
-                vec![
-                    NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)),
-                    NumPred::Cmp(CmpOp::Le, ConstValue::Int(65535)),
-                ]
-                .into(),
-            )),
-        );
-        assert!(port.accepts_value(&Type::Int, Some(&ConstValue::Int(80))));
-        assert!(!port.accepts_value(&Type::Int, Some(&ConstValue::Int(70000))));
-    }
-
-    #[test]
-    fn a_pattern_lets_an_unknown_value_through() {
-        let port = pat(
-            Type::Int,
-            Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0))),
-        );
-        assert!(port.accepts_value(&Type::Int, None));
-        assert!(Type::Int.accepts(&port));
-    }
-
-    #[test]
     fn a_text_pattern_reads_the_literal() {
         let mail = pat(Type::String, Pred::Text(TextPred::Has("@".into())));
         assert!(mail.accepts_value(
@@ -2240,31 +2796,154 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_checks_the_value_when_it_is_known() {
+        let port = pat(
+            Type::Int,
+            Pred::Int(NumPred::cmp(CmpOp::Gt, 0).and(NumPred::cmp(CmpOp::Le, 65535))),
+        );
+        assert!(port.accepts_value(&Type::Int, Some(&ConstValue::Int(80))));
+        assert!(!port.accepts_value(&Type::Int, Some(&ConstValue::Int(70000))));
+        // 下界是开区间,边界值本身不满足
+        assert!(!port.accepts_value(&Type::Int, Some(&ConstValue::Int(0))));
+    }
+
+    #[test]
+    fn a_pattern_lets_an_unknown_value_through() {
+        let port = pat(Type::Int, Pred::Int(NumPred::cmp(CmpOp::Gt, 0)));
+        assert!(port.accepts_value(&Type::Int, None));
+        assert!(Type::Int.accepts(&port));
+    }
+
+    #[test]
     fn a_label_and_a_pattern_render_the_way_the_editor_shows_them() {
         assert_eq!(brand(Type::Int, "len").to_string(), "int ::len::");
         assert_eq!(unit(Type::Float, "m/s^2").to_string(), "float <m/s^2>");
         assert_eq!(
-            pat(
-                Type::Int,
-                Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
-            )
-            .to_string(),
-            "int*"
+            pat(Type::Int, Pred::Int(NumPred::half_open(0, 65535))).to_string(),
+            "int ∈[0, 65535)"
         );
         assert_eq!(
             brand(
-                pat(
-                    Type::Int,
-                    Pred::Num(NumPred::Cmp(CmpOp::Gt, ConstValue::Int(0)))
-                ),
+                pat(Type::Int, Pred::Int(NumPred::half_open(0, 65535))),
                 "len"
             )
             .to_string(),
-            "int* ::len::"
+            "int ∈[0, 65535) ::len::"
         );
         assert_eq!(
             (brand(Type::Int, "len") | Type::Nil).to_string(),
             "(int ::len::)?"
         );
+    }
+
+    #[test]
+    fn numeric_predicates_close_over_and_or_not() {
+        let port = NumPred::cmp(CmpOp::Gt, 0).and(NumPred::cmp(CmpOp::Le, 65535));
+        assert!(port.contains(&80));
+        assert!(!port.contains(&0));
+        assert!(!port.contains(&65536));
+
+        // De Morgan:not(A ∧ B) = ¬A ∨ ¬B,集合代数应当精确成立
+        let a = NumPred::<DukaInt>::cmp(CmpOp::Gt, 0);
+        let b = NumPred::<DukaInt>::cmp(CmpOp::Le, 10);
+        for n in [-1, 0, 5, 11] {
+            assert_eq!(
+                a.clone().and(b.clone()).not().contains(&n),
+                a.clone().not().or(b.clone().not()).contains(&n),
+                "De Morgan at {n}"
+            );
+        }
+
+        // 漂亮情形:取反在 include 与 exclude 之间互换
+        assert_eq!(
+            NumPred::<DukaInt>::cmp(CmpOp::Eq, 5).not().to_string(),
+            "∉{5}"
+        );
+        assert_eq!(
+            NumPred::<DukaInt>::cmp(CmpOp::Ne, 5).not().to_string(),
+            "∈{5}"
+        );
+    }
+
+    #[test]
+    fn unbounded_ends_stay_exact_over_integers() {
+        // 无界端点不是哨兵:i64::MIN / i64::MAX 本身也不丢
+        assert!(NumPred::<DukaInt>::cmp(CmpOp::Lt, 5).contains(&i64::MIN));
+        assert!(NumPred::<DukaInt>::cmp(CmpOp::Le, 5).contains(&i64::MIN));
+        let high = NumPred::<DukaInt>::cmp(CmpOp::Gt, i64::MAX - 2);
+        assert!(high.contains(&(i64::MAX - 1)));
+        assert!(high.contains(&i64::MAX));
+        assert!(NumPred::<DukaInt>::cmp(CmpOp::Ge, i64::MAX).contains(&i64::MAX));
+
+        // 全域与补集
+        let all = NumPred::<DukaInt>::default();
+        assert!(all.contains(&0));
+        let nothing = all.not();
+        assert!(!nothing.contains(&0));
+        assert_eq!(nothing.to_string(), "∈∅");
+    }
+
+    #[test]
+    fn a_len_predicate_counts_characters() {
+        let len = TextPred::Len(NumPred::cmp(CmpOp::Ge, 3).and(NumPred::cmp(CmpOp::Le, 4)));
+        assert!(len.check("abc".as_bytes()));
+        assert!(len.check("一二三".as_bytes()));
+        assert!(!len.check("ab".as_bytes()));
+        assert!(!len.check("abcde".as_bytes()));
+    }
+
+    #[test]
+    fn difference_keeps_the_open_ends_of_the_subtracted_ranges() {
+        let mut gt = NumSet::<DukaInt>::empty_set();
+        gt.ranges.push((Some(0), None));
+        let rest = NumSet::top().difference(&gt);
+        assert!(rest.contains(&0));
+        assert!(!rest.contains(&1));
+        assert!(!rest.contains(&i64::MAX));
+
+        let pred = NumPred::cmp(CmpOp::Gt, 0)
+            .not()
+            .or(NumPred::default().not());
+        assert!(pred.contains(&0));
+        assert!(!pred.contains(&1));
+    }
+
+    #[test]
+    fn a_text_predicate_reads_the_substring_relations() {
+        let has_at = TextPred::Has("@".into());
+        assert!(has_at.accepts(&TextPred::Starts("user@".into())));
+        assert!(!TextPred::Starts("user@".into()).accepts(&has_at));
+
+        let long = TextPred::Len(NumPred::cmp(CmpOp::Ge, 5));
+        assert!(long.accepts(&TextPred::Starts("12345".into())));
+        assert!(!long.accepts(&TextPred::Starts("12".into())));
+
+        assert!(
+            TextPred::Not(Box::new(TextPred::Starts("user@".into())))
+                .accepts(&TextPred::Not(Box::new(has_at)))
+        );
+
+        let either =
+            TextPred::Or(vec![TextPred::Has("a".into()), TextPred::Has("b".into())].into());
+        assert!(either.accepts(&TextPred::Has("a".into())));
+        assert!(!TextPred::Has("a".into()).accepts(&either));
+
+        let both =
+            TextPred::And(vec![TextPred::Has("ab".into()), TextPred::Has("cd".into())].into());
+        assert!(both.accepts(&TextPred::Has("ab".into())));
+        assert!(TextPred::Has("ab".into()).accepts(&both));
+
+        let at_least_3 = TextPred::Len(NumPred::cmp(CmpOp::Ge, 3));
+        let shorter = TextPred::Len(NumPred::cmp(CmpOp::Lt, 3));
+        assert!(TextPred::Not(Box::new(shorter)).accepts(&at_least_3));
+        assert!(
+            at_least_3.accepts(&TextPred::Not(Box::new(TextPred::Len(NumPred::cmp(
+                CmpOp::Lt,
+                3
+            )))))
+        );
+
+        assert!(TextPred::Regex("a+".into()).accepts(&TextPred::Regex("a+".into())));
+        assert!(!TextPred::Regex("a+".into()).accepts(&TextPred::Regex("[ab]+".into())));
     }
 }

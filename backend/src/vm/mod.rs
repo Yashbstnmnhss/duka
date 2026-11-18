@@ -321,6 +321,8 @@ impl Scheduler {
                         {
                             let mut d = d.borrow_mut();
                             d.paused_frames = self.current().inner.create_debug_frames();
+                            d.paused_on_error = true;
+                            d.last_pause_span = d.paused_frames.last().and_then(|f| f.pc_span);
                             // TODO: pass kind
                             return Ok(Outcome::Paused);
                         }
@@ -830,6 +832,23 @@ impl DukaVM for VM {
     type OkType = ValueCount;
 
     fn execute(&mut self, proto: &DukaProto) -> Result<ValueCount, DukaTraceError> {
+        self.prepare_main(proto);
+        match self.go() {
+            Ok(count) => Ok(count),
+            // VM can be reused after errors, e.g. by the sequential REPL.
+            Err(e) => {
+                self.scheduler.main_mut().inner.reset();
+                Err(e)
+            }
+        }
+    }
+}
+
+impl VM {
+    /// Push the entry closure of `proto` onto the main coroutine, which is
+    /// everything [`DukaVM::execute`] does before handing over to the
+    /// scheduler.
+    fn prepare_main(&mut self, proto: &DukaProto) {
         let proto_gc = self.heap.alloc(proto.clone());
         // the _ENV
         let closure = DukaClosure::from_proto(proto_gc).set_up_value(
@@ -849,14 +868,16 @@ impl DukaVM for VM {
             .last_mut()
             .unwrap()
             .narg = stack_len;
-        match self.go() {
-            Ok(count) => Ok(count),
-            // VM can be reused after errors, e.g. by the sequential REPL.
-            Err(e) => {
-                self.scheduler.main_mut().inner.reset();
-                Err(e)
-            }
-        }
+    }
+
+    /// One scheduler quantum after the usual entry setup, returning
+    /// [`Outcome::Paused`] instead of stepping through it, so a host that
+    /// attached a [`DebuggerCell`](crate::vm::coroutine::DebuggerCell) talks to
+    /// its [`crate::vm::debugger::Debugger`] between `Scheduler::run` calls.
+    #[cfg(feature = "debug")]
+    pub fn execute_debug(&mut self, proto: &DukaProto) -> Result<Outcome, DukaTraceError> {
+        self.prepare_main(proto);
+        self.scheduler.run(&mut self.heap)
     }
 }
 

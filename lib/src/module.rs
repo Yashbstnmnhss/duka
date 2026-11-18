@@ -757,6 +757,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use duka_shared::dtype::Type;
+    use duka_shared::value::{ConstValue, DukaFloat, DukaFloatWrapper, DukaInt};
 
     fn proto_bytes(source: &str) -> Vec<u8> {
         let proto = gen_source(
@@ -919,5 +921,199 @@ name = "pkg2"
             LoadedModule::Executable { path, .. } => path.clone(),
             _ => None,
         }
+    }
+
+    fn analyzed(source: &str) -> (duka_frontend::analyzer::ScopeAnalysis, Vec<DukaDiagnose>) {
+        let mut chunk = parse_source(
+            source,
+            SourceName::Virtual("test".into()),
+            &DukaParsingConfig::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let provider = FileModuleSourceProvider::for_entry(None);
+        let (data, errors) = adapt_analyze_check(
+            &mut chunk,
+            &DukaParsingConfig::default(),
+            &provider,
+            None,
+            None,
+        );
+        (data.1, errors)
+    }
+
+    fn symbol_of<'a>(
+        analysis: &'a duka_frontend::analyzer::ScopeAnalysis,
+        name: &str,
+    ) -> Option<&'a duka_shared::utils::Symbol> {
+        analysis
+            .symbols
+            .scopes()
+            .iter()
+            .find_map(|scope| scope.symbols.get(name))
+            .and_then(|syms| syms.last())
+    }
+
+    #[test]
+    fn array_literal_elements_meet_value_patterns() {
+        let (_, errors) =
+            analyzed("type NonNeg = Patterns.GePat(float, 0)\nlocal a: array<NonNeg> = [-1]\n");
+        assert!(errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let (_, errors) =
+            analyzed("type NonNeg = Patterns.GePat(float, 0)\nlocal a: array<NonNeg> = [0, 1.5]\n");
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+    }
+
+    #[test]
+    fn array_literal_arguments_meet_value_patterns() {
+        let (_, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nfunction f(x: array<NonNeg>) end\nf([-1])\n",
+        );
+        assert!(errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let (_, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nfunction f(x: array<NonNeg>) end\nf([1])\n",
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+    }
+
+    #[test]
+    fn scalar_pattern_checks_the_written_value() {
+        let (_, errors) =
+            analyzed("type NonNeg = Patterns.GePat(float, 0)\nlocal a: NonNeg = -1\n");
+        assert!(errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let (_, errors) = analyzed("type NonNeg = Patterns.GePat(float, 0)\nlocal a: NonNeg = 1\n");
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+    }
+
+    #[test]
+    fn a_later_const_does_not_rewrite_earlier_aliases() {
+        let (analysis, _) = analyzed(
+            "type BBBB = { a: true }\ntype NonNeg = Patterns.GePat(float, 0)\nlocal bbbba = 1 |> as.<NonNeg>()\nlocal aaaab = bbbba - 1\ntype ABC = function() -> BBBB : @effects(pure = true)\ntype EofABC = GetEffects(ABC)\ntype TEST = (ABC == function() -> BBBB : @effects(pure))\n\n@const\nlocal ccc_v = 1\n\nlocal b = ccc_v\n",
+        );
+        let test = symbol_of(&analysis, "TEST").expect("TEST is declared");
+        assert_eq!(test.ty_display.as_deref(), Some("true"));
+        assert_eq!(
+            test.ty.as_deref(),
+            Some(&Type::Literal(ConstValue::Bool(true)))
+        );
+        let ccc_v = symbol_of(&analysis, "ccc_v").expect("the const is declared");
+        assert_eq!(ccc_v.ty_display.as_deref(), Some("int"));
+    }
+
+    struct TestProvider {
+        modules: HashMap<Box<str>, Arc<[u8]>>,
+    }
+
+    impl DukaSourceProvider for TestProvider {
+        fn load(&self, name: &str, _caller_path: Option<&Path>) -> Option<DukaSource> {
+            let source = self.modules.get(name)?;
+            Some(DukaSource {
+                name: name.into(),
+                path: None,
+                source: source.clone(),
+            })
+        }
+    }
+
+    fn pattern_has(ty: &Type, n: DukaFloat) -> bool {
+        match ty {
+            Type::Pattern(p) => match &p.pred {
+                duka_shared::dtype::Pred::Num(pred) => pred.contains(&DukaFloatWrapper::from(n)),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn pattern_has_int(ty: &Type, n: DukaInt) -> bool {
+        match ty {
+            Type::Pattern(p) => match &p.pred {
+                duka_shared::dtype::Pred::Int(pred) => pred.contains(&n),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn integer_pattern_arithmetic_maps_constant_bounds() {
+        let (analysis, errors) = analyzed(
+            "type PosInt = Patterns.GePat(int, 0)\nlocal i = 1 |> as.<PosInt>()\nlocal j = i - 3\nlocal k = -i\n",
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let j = symbol_of(&analysis, "j").unwrap().ty.as_deref().unwrap();
+        assert!(pattern_has_int(j, -3));
+        assert!(!pattern_has_int(j, -4));
+        let k = symbol_of(&analysis, "k").unwrap().ty.as_deref().unwrap();
+        assert!(pattern_has_int(k, -1));
+        assert!(!pattern_has_int(k, 1));
+    }
+
+    #[test]
+    fn pattern_arithmetic_maps_constant_bounds() {
+        let (analysis, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nlocal b = 1 |> as.<NonNeg>()\nlocal sub = b - 1\nlocal add = b + 1\nlocal neg = -b\nlocal mul = b * -2\nlocal div = b / 2\nlocal rev = 1 - b\n",
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let ty = |name| symbol_of(&analysis, name).unwrap().ty.as_deref().unwrap();
+        assert!(pattern_has(ty("sub"), -1.0));
+        assert!(!pattern_has(ty("sub"), -2.0));
+        assert!(pattern_has(ty("add"), 1.0));
+        assert!(!pattern_has(ty("add"), 0.5));
+        assert!(pattern_has(ty("neg"), -1.0));
+        assert!(!pattern_has(ty("neg"), 1.0));
+        assert!(pattern_has(ty("mul"), -5.0));
+        assert!(!pattern_has(ty("mul"), 1.0));
+        assert!(pattern_has(ty("div"), 0.0));
+        assert!(!pattern_has(ty("div"), -0.5));
+        assert!(pattern_has(ty("rev"), 0.0));
+        assert!(!pattern_has(ty("rev"), 2.0));
+    }
+
+    #[test]
+    fn pattern_arithmetic_falls_back_without_a_constant() {
+        let (analysis, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nlocal b = 1 |> as.<NonNeg>()\nlocal x = 2\nlocal y = b * x\n",
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let y = symbol_of(&analysis, "y").unwrap();
+        assert!(matches!(y.ty.as_deref(), Some(Type::Float)));
+    }
+
+    #[test]
+    fn weakened_pattern_does_not_fit_the_original() {
+        let (_, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nlocal b = 1 |> as.<NonNeg>()\nlocal a: NonNeg = b - 1\n",
+        );
+        assert!(errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+        let (_, errors) = analyzed(
+            "type NonNeg = Patterns.GePat(float, 0)\nlocal b = 1 |> as.<NonNeg>()\nlocal a: NonNeg = b + 1\n",
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
+    }
+
+    #[test]
+    fn required_modules_have_the_type_prelude() {
+        let dep = "type V = Unit(\"m/s\")\n";
+        let provider = TestProvider {
+            modules: HashMap::from([("dep".into(), dep.as_bytes().into())]),
+        };
+        let mut chunk = parse_source(
+            "local m = require \"dep\"\n",
+            SourceName::Virtual("entry".into()),
+            &DukaParsingConfig::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let (_, errors) = adapt_analyze_check(
+            &mut chunk,
+            &DukaParsingConfig::default(),
+            &provider,
+            None,
+            None,
+        );
+        assert!(!errors.iter().any(DukaDiagnose::is_error), "{errors:?}");
     }
 }

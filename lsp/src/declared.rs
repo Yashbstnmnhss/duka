@@ -31,9 +31,10 @@ pub struct Generated {
 }
 
 impl Generated {
-    pub fn uri(&self) -> Url {
-        Url::parse(&format!("{SCHEME}:/{name}", name = self.name))
-            .expect("a generated file name is a valid path")
+    pub fn uri(&self) -> Option<Url> {
+        let mut url = Url::parse(&format!("{SCHEME}:/")).ok()?;
+        url.path_segments_mut().ok()?.extend(self.name.split('/'));
+        Some(url)
     }
 
     pub fn line_of(&self, path: &str) -> Option<u32> {
@@ -460,7 +461,14 @@ fn declare_module_types(types: &mut Writer, metas: &[MetaInfo]) {
 pub fn locate(path: &str) -> Option<(Url, u32)> {
     generated()
         .iter()
-        .find_map(|file| Some((file.uri(), file.line_of(path)?)))
+        .find_map(|file| Some((file.uri()?, file.line_of(path)?)))
+}
+
+pub fn text_for(uri: &Url) -> Option<&'static str> {
+    generated()
+        .iter()
+        .find(|file| file.uri().as_ref() == Some(uri))
+        .map(|file| file.text.as_str())
 }
 #[cfg(test)]
 mod tests {

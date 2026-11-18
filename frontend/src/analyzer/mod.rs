@@ -685,7 +685,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                             self.check_name(key, *span, false);
                             let id = if !global
                                 && has_attr(attrs, catt::CONST)
-                                && let Some(Node(NodeKind::Literal(cv), span)) = exprs.get(idx)
+                                && let Some(Node(NodeKind::Literal(cv), _)) = exprs.get(idx)
                             {
                                 self.0
                                     .symbols

@@ -656,104 +656,112 @@ impl Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        if let Some(options) = &params.initialization_options {
-            let options = InitOptions::from_value(options);
-            if !options.module_paths.is_empty() {
-                crate::compile::set_extra_module_paths(options.module_paths);
+        self.contained(async {
+            if let Some(options) = &params.initialization_options {
+                let options = InitOptions::from_value(options);
+                if !options.module_paths.is_empty() {
+                    crate::compile::set_extra_module_paths(options.module_paths);
+                }
             }
-        }
-        let mut roots: Vec<PathBuf> = params
-            .workspace_folders
-            .as_ref()
-            .map(|folders| {
-                folders
-                    .iter()
-                    .filter_map(|folder| folder.uri.to_file_path().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if roots.is_empty()
-            && let Some(root) = params
-                .root_uri
+            let mut roots: Vec<PathBuf> = params
+                .workspace_folders
                 .as_ref()
-                .and_then(|uri| uri.to_file_path().ok())
-        {
-            roots.push(root);
-        }
-        *self.roots.lock().unwrap_or_else(|e| e.into_inner()) = roots;
+                .map(|folders| {
+                    folders
+                        .iter()
+                        .filter_map(|folder| folder.uri.to_file_path().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if roots.is_empty()
+                && let Some(root) = params
+                    .root_uri
+                    .as_ref()
+                    .and_then(|uri| uri.to_file_path().ok())
+            {
+                roots.push(root);
+            }
+            *self.roots.lock().unwrap_or_else(|e| e.into_inner()) = roots;
 
-        Ok(InitializeResult {
-            server_info: Some(ServerInfo {
-                name: "duka-lsp".to_owned(),
-                version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            }),
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
-                )),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
-                references_provider: Some(OneOf::Left(true)),
-                document_symbol_provider: Some(OneOf::Left(true)),
-                document_highlight_provider: Some(OneOf::Left(true)),
-                signature_help_provider: Some(SignatureHelpOptions {
-                    trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
-                    retrigger_characters: Some(vec![",".to_owned()]),
-                    work_done_progress_options: Default::default(),
+            Ok(InitializeResult {
+                server_info: Some(ServerInfo {
+                    name: "duka-lsp".to_owned(),
+                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 }),
-                rename_provider: Some(OneOf::Right(RenameOptions {
-                    prepare_provider: Some(true),
-                    work_done_progress_options: Default::default(),
-                })),
-                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-                document_link_provider: Some(DocumentLinkOptions {
-                    resolve_provider: Some(false),
-                    work_done_progress_options: Default::default(),
-                }),
-                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
-                inlay_hint_provider: Some(OneOf::Left(true)),
-                completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_owned(), ":".to_owned()]),
-                    // The documentation of every candidate is a rendered
-                    // document. Sending a thousand of them on each keystroke
-                    // is the cost; resolving the one the reader picks is not.
-                    resolve_provider: Some(true),
-                    ..Default::default()
-                }),
-                workspace_symbol_provider: Some(OneOf::Left(true)),
-                code_action_provider: Some(CodeActionProviderCapability::Options(
-                    CodeActionOptions {
-                        code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+                capabilities: ServerCapabilities {
+                    text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                        TextDocumentSyncKind::INCREMENTAL,
+                    )),
+                    hover_provider: Some(HoverProviderCapability::Simple(true)),
+                    definition_provider: Some(OneOf::Left(true)),
+                    type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+                    references_provider: Some(OneOf::Left(true)),
+                    document_symbol_provider: Some(OneOf::Left(true)),
+                    document_highlight_provider: Some(OneOf::Left(true)),
+                    signature_help_provider: Some(SignatureHelpOptions {
+                        trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                        retrigger_characters: Some(vec![",".to_owned()]),
                         work_done_progress_options: Default::default(),
+                    }),
+                    rename_provider: Some(OneOf::Right(RenameOptions {
+                        prepare_provider: Some(true),
+                        work_done_progress_options: Default::default(),
+                    })),
+                    folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                    document_link_provider: Some(DocumentLinkOptions {
                         resolve_provider: Some(false),
-                    },
-                )),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: SemanticTokensLegend {
-                                token_types: vec![
-                                    SemanticTokenType::FUNCTION,
-                                    SemanticTokenType::VARIABLE,
-                                    SemanticTokenType::KEYWORD,
-                                    SemanticTokenType::MACRO,
-                                    SemanticTokenType::TYPE,
-                                    SemanticTokenType::DECORATOR,
-                                    SemanticTokenType::PROPERTY,
-                                    SemanticTokenType::EVENT,
-                                    SemanticTokenType::OPERATOR,
-                                ],
-                                token_modifiers: vec![],
-                            },
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            range: Some(true),
+                        work_done_progress_options: Default::default(),
+                    }),
+                    selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                    inlay_hint_provider: Some(OneOf::Left(true)),
+                    completion_provider: Some(CompletionOptions {
+                        trigger_characters: Some(vec![".".to_owned(), ":".to_owned()]),
+                        // The documentation of every candidate is a rendered
+                        // document. Sending a thousand of them on each keystroke
+                        // is the cost; resolving the one the reader picks is not.
+                        resolve_provider: Some(true),
+                        ..Default::default()
+                    }),
+                    workspace_symbol_provider: Some(OneOf::Left(true)),
+                    code_action_provider: Some(CodeActionProviderCapability::Options(
+                        CodeActionOptions {
+                            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
                             work_done_progress_options: Default::default(),
+                            resolve_provider: Some(false),
                         },
+                    )),
+                    semantic_tokens_provider: Some(
+                        SemanticTokensServerCapabilities::SemanticTokensOptions(
+                            SemanticTokensOptions {
+                                legend: SemanticTokensLegend {
+                                    token_types: vec![
+                                        SemanticTokenType::FUNCTION,
+                                        SemanticTokenType::VARIABLE,
+                                        SemanticTokenType::KEYWORD,
+                                        SemanticTokenType::MACRO,
+                                        SemanticTokenType::TYPE,
+                                        SemanticTokenType::DECORATOR,
+                                        SemanticTokenType::PROPERTY,
+                                        SemanticTokenType::EVENT,
+                                        SemanticTokenType::OPERATOR,
+                                    ],
+                                    token_modifiers: vec![],
+                                },
+                                full: Some(SemanticTokensFullOptions::Bool(true)),
+                                range: Some(true),
+                                work_done_progress_options: Default::default(),
+                            },
+                        ),
                     ),
-                ),
-                ..Default::default()
-            },
+                    ..Default::default()
+                },
+            })
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(tower_lsp::jsonrpc::Error::new(
+                tower_lsp::jsonrpc::ErrorCode::InternalError,
+            ))
         })
     }
 
@@ -764,76 +772,100 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let doc = params.text_document;
-        lock(&self.workspace).open(doc.uri.clone(), doc.text, doc.version);
-        self.schedule_publish(&doc.uri);
+        let _ = self
+            .contained(async {
+                let doc = params.text_document;
+                lock(&self.workspace).open(doc.uri.clone(), doc.text, doc.version);
+                self.schedule_publish(&doc.uri);
+            })
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri;
-        if params.content_changes.is_empty() {
-            return;
-        }
-        if lock(&self.workspace).apply_change(
-            &uri,
-            &params.content_changes,
-            params.text_document.version,
-        ) {
-            self.schedule_publish(&uri);
-        }
+        let _ = self
+            .contained(async {
+                let uri = params.text_document.uri;
+                if params.content_changes.is_empty() {
+                    return;
+                }
+                if lock(&self.workspace).apply_change(
+                    &uri,
+                    &params.content_changes,
+                    params.text_document.version,
+                ) {
+                    if let Ok(path) = uri.to_file_path() {
+                        lock(&self.workspace).invalidate_dependents(&path);
+                    }
+                    self.schedule_publish(&uri);
+                }
+            })
+            .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let uri = params.text_document.uri;
-        lock(&self.workspace).close(&uri);
-        if let Ok(mut published) = self.published.lock() {
-            published.remove(&uri);
-        }
-        let _ = self.client.publish_diagnostics(uri, vec![], None).await;
+        let _ = self
+            .contained(async {
+                let uri = params.text_document.uri;
+                lock(&self.workspace).close(&uri);
+                if let Ok(mut published) = self.published.lock() {
+                    published.remove(&uri);
+                }
+                let _ = self.client.publish_diagnostics(uri, vec![], None).await;
+            })
+            .await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        self.publish(&params.text_document.uri).await;
+        let _ = self
+            .contained(self.publish(&params.text_document.uri))
+            .await;
     }
 
     async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
-        {
-            let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-            for removed in &params.event.removed {
-                if let Ok(path) = removed.uri.to_file_path() {
-                    roots.retain(|root| root != &path);
-                }
-            }
-            for added in &params.event.added {
-                if let Ok(path) = added.uri.to_file_path()
-                    && !roots.contains(&path)
+        let _ = self
+            .contained(async {
                 {
-                    roots.push(path);
+                    let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
+                    for removed in &params.event.removed {
+                        if let Ok(path) = removed.uri.to_file_path() {
+                            roots.retain(|root| root != &path);
+                        }
+                    }
+                    for added in &params.event.added {
+                        if let Ok(path) = added.uri.to_file_path()
+                            && !roots.contains(&path)
+                        {
+                            roots.push(path);
+                        }
+                    }
                 }
-            }
-        }
-        lock(&self.workspace).invalidate_projects();
-        self.schedule_publish_all();
+                lock(&self.workspace).invalidate_projects();
+                self.schedule_publish_all();
+            })
+            .await;
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
-        let manifests = params
-            .changes
-            .iter()
-            .any(|change| change.uri.path().ends_with("kao.toml"));
-        {
-            let mut workspace = lock(&self.workspace);
-            workspace.touch();
-            for change in &params.changes {
-                if let Ok(path) = change.uri.to_file_path() {
-                    workspace.invalidate_disk(&path);
+        let _ = self
+            .contained(async {
+                let manifests = params
+                    .changes
+                    .iter()
+                    .any(|change| change.uri.path().ends_with("kao.toml"));
+                {
+                    let mut workspace = lock(&self.workspace);
+                    for change in &params.changes {
+                        if let Ok(path) = change.uri.to_file_path() {
+                            workspace.invalidate_dependents(&path);
+                        }
+                    }
+                    if manifests {
+                        workspace.invalidate_projects();
+                    }
                 }
-            }
-            if manifests {
-                workspace.invalidate_projects();
-            }
-        }
-        self.schedule_publish_all();
+                self.schedule_publish_all();
+            })
+            .await;
     }
 
     async fn symbol(
@@ -849,15 +881,20 @@ impl LanguageServer for Backend {
         let Some(data) = item.data.take() else {
             return Ok(item);
         };
-        let documentation = if let Some(path) = data.get("builtin").and_then(|v| v.as_str()) {
-            docs::value_builtin_view(path)
-                .or_else(|| docs::type_builtin_view(path))
-                .map(|view| view.render())
-        } else if let Some(name) = data.get("keyword").and_then(|v| v.as_str()) {
-            docs::keyword_view(name).map(|view| view.render())
-        } else {
-            None
-        };
+        let documentation = self
+            .contained(async {
+                if let Some(path) = data.get("builtin").and_then(|v| v.as_str()) {
+                    docs::value_builtin_view(path)
+                        .or_else(|| docs::type_builtin_view(path))
+                        .map(|view| view.render())
+                } else if let Some(name) = data.get("keyword").and_then(|v| v.as_str()) {
+                    docs::keyword_view(name).map(|view| view.render())
+                } else {
+                    None
+                }
+            })
+            .await
+            .flatten();
         if let Some(documentation) = documentation {
             item.documentation = Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -1036,9 +1073,15 @@ impl Backend {
                     .map(|base| format!("{base}.{name}"))
                     .unwrap_or(name);
             if let Some((uri, line)) = crate::declared::locate(&path) {
+                let end = crate::declared::text_for(&uri)
+                    .map(|text| {
+                        let index = convert::LineIndex::new(text);
+                        index.line_text(text, line as usize).encode_utf16().count() as u32
+                    })
+                    .unwrap_or(0);
                 return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                     uri,
-                    range: Range::new(Position::new(line, 0), Position::new(line, u32::MAX)),
+                    range: Range::new(Position::new(line, 0), Position::new(line, end)),
                 })));
             }
         }
@@ -2157,52 +2200,8 @@ fn module_symbol<'a>(
         .next_back()
 }
 
-fn require_bindings(analysis: &compile::DocAnalysis) -> HashMap<String, PathBuf> {
-    let mut out = HashMap::new();
-    let Some(resolver) = analysis.modules.as_ref() else {
-        return out;
-    };
-    let tokens = &analysis.tokens.tokens;
-    for i in 0..tokens.len() {
-        let TokenKind::Ident(name) = &tokens[i].0 else {
-            continue;
-        };
-        let Some((TokenKind::Assign, _)) = tokens.get(i + 1) else {
-            continue;
-        };
-        let mut at = i + 2;
-        while tokens.get(at).is_some_and(|(kind, _)| kind.is_comment()) {
-            at += 1;
-        }
-        let Some((TokenKind::Ident(callee), _)) = tokens.get(at) else {
-            continue;
-        };
-        let mut argument = at + 1;
-        let parenthesised = matches!(
-            tokens.get(argument).map(|(kind, _)| kind),
-            Some(TokenKind::LParen)
-        );
-        if parenthesised {
-            argument += 1;
-        }
-        let Some(TokenKind::String(bytes)) = tokens.get(argument).map(|(kind, _)| kind) else {
-            continue;
-        };
-        let is_require = &**callee == cpar::REQUIRE
-            || (parenthesised && &**callee == duka_lib::duka_shared::constants::ctype::REQUIRE);
-        if !is_require {
-            continue;
-        }
-        let module = String::from_utf8_lossy(bytes).into_owned();
-        let Some(module) = resolver.resolve(&analysis.scope.modules, &module) else {
-            continue;
-        };
-        let SourceName::File(_, path) = &module.source.name else {
-            continue;
-        };
-        out.insert(name.to_string(), path.to_path_buf());
-    }
-    out
+fn require_bindings(analysis: &compile::DocAnalysis) -> &HashMap<String, PathBuf> {
+    &analysis.require_bindings
 }
 
 fn member_occurrences(analysis: &compile::DocAnalysis, name: &str, decl_path: &Path) -> Vec<Span> {
@@ -2236,59 +2235,25 @@ fn same_name_spans(analysis: &compile::DocAnalysis, span: Span) -> Option<(Strin
         .find(|(_, at)| *at == span)
         .and_then(|(kind, _)| ident_name(kind))?
         .to_owned();
-    let target_id = analysis.scope.symbols.symbol_at_span(span).map(|s| s.id);
-    let mut out: Vec<Span> = vec![];
-    let mut brace_depth = 0usize;
-    let mut prev_significant: Option<&TokenKind> = None;
-    for (i, (kind, at)) in analysis.tokens.tokens.iter().enumerate() {
-        if !kind.is_terminator() {
-            match kind {
-                TokenKind::LBrace => brace_depth += 1,
-                TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
-                _ => {}
-            }
+    let table = &analysis.scope.symbols;
+    let symbol = table
+        .symbol_at_span(span)
+        .filter(|symbol| symbol.span != Span::EMPTY)
+        .or_else(|| {
+            table
+                .resolve_at((span.start.line, span.start.column), &name)
+                .filter(|symbol| symbol.span != Span::EMPTY)
+        })?;
+    let id = symbol.id;
+    let mut spans = vec![table.symbol_by_id(id)?.span];
+    for (at, used) in &analysis.scope.uses {
+        if *used == id {
+            spans.push(*at);
         }
-        let is_ident = ident_name(kind) == Some(name.as_str());
-        if is_ident && brace_depth > 0 {
-            let next_is_assign = analysis
-                .tokens
-                .tokens
-                .get(i + 1)
-                .is_some_and(|(k, _)| matches!(k, TokenKind::Assign));
-            let after_open = prev_significant.is_none_or(|k| {
-                matches!(k, TokenKind::LBrace | TokenKind::Comma) || k.is_terminator()
-            });
-            if next_is_assign && after_open {
-                prev_significant = Some(kind);
-                continue;
-            }
-        }
-        if !kind.is_terminator() {
-            prev_significant = Some(kind);
-        }
-        if !is_ident {
-            continue;
-        }
-        let is_field_decl = analysis
-            .tokens
-            .tokens
-            .get(i + 1)
-            .is_some_and(|(k, _)| matches!(k, TokenKind::Colon));
-        if is_field_decl {
-            continue;
-        }
-        if analysis.scope.member_paths.contains_key(at) {
-            continue;
-        }
-        if let (Some(target_id), Some(found)) =
-            (target_id, analysis.scope.symbols.symbol_at_span(*at))
-            && found.id != target_id
-        {
-            continue;
-        }
-        out.push(*at);
     }
-    Some((name, out))
+    spans.sort_by_key(|at| (at.start.line, at.start.column));
+    spans.dedup();
+    Some((name, spans))
 }
 
 /// The declaration of a label together with the `goto`s that land on it.
@@ -3378,17 +3343,18 @@ async fn snapshot_of(client: &Client, workspace: &SharedWorkspace, uri: &Url) ->
                 return None;
             }
         };
-        let (committed, analysis) = lock(workspace).commit(uri, revision, &text, analysis);
+        let (committed, _) = lock(workspace).commit(uri, revision, &text, analysis);
         if committed {
             return lock(workspace).snapshot(uri);
         }
         if attempts >= MAX_ANALYSIS_ATTEMPTS {
-            let line_index = Arc::new(convert::LineIndex::new(&text));
-            return Some(Snapshot {
-                text,
-                analysis,
-                line_index,
-            });
+            let _ = client
+                .log_message(
+                    MessageType::WARNING,
+                    format!("analysis of {uri} kept losing to edits; no snapshot served"),
+                )
+                .await;
+            return None;
         }
     }
 }
@@ -4225,13 +4191,10 @@ fn symbol_hover(
                     let mut ft = sig.param_view();
                     ft.type_vars = [].into();
                     if let Some(solution) = &solution {
-                        let viewed = Type::Function(Some(ft));
+                        let viewed = Type::Function(Some(ft.clone()));
                         ft = match solution.substitute(&viewed) {
-                            Type::Function(Some(ft)) => ft,
-                            _ => match viewed {
-                                Type::Function(Some(ft)) => ft,
-                                _ => unreachable!(),
-                            },
+                            Type::Function(Some(substituted)) => substituted,
+                            _ => ft,
                         };
                         ft.type_vars = [].into();
                     }
@@ -4695,6 +4658,17 @@ mod tests {
     use crate::declared::SCHEME;
 
     use super::*;
+
+    #[test]
+    fn contained_keeps_a_panic_from_unwinding_the_server_loop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(Contained(Box::pin(async {
+            panic!("boom");
+        })));
+        assert!(result.is_err());
+    }
 
     fn analyze(text: &str) -> compile::DocAnalysis {
         let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
@@ -6442,6 +6416,34 @@ end
             &mut cache,
         )
     }
+    #[test]
+    fn require_bindings_pair_each_name_with_its_own_module() {
+        let dir = std::env::temp_dir().join("duka-lsp-bind-test");
+        let a = dir.join("modules").join("a.duka");
+        let b = dir.join("modules").join("b.duka");
+        let mut open = HashMap::new();
+        open.insert(
+            a.clone(),
+            Arc::new("export function f() return 1 end".to_owned()),
+        );
+        open.insert(
+            b.clone(),
+            Arc::new("export function f() return 2 end".to_owned()),
+        );
+        let text = "local x, y = require(\"a\"), require(\"b\")\n";
+        let mut cache = duka_lib::duka_frontend::analyzer::modules::ModuleBuildCache::default();
+        let analysis = compile::analyze(
+            text,
+            "main.duka",
+            Some(&dir.join("main.duka")),
+            &open,
+            &mut cache,
+        );
+        let bindings = require_bindings(&analysis);
+        assert_eq!(bindings.get("x"), Some(&a), "{bindings:?}");
+        assert_eq!(bindings.get("y"), Some(&b), "{bindings:?}");
+    }
+
     #[test]
     fn a_declared_export_of_another_module_reads_as_one() {
         let module =

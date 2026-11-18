@@ -47,6 +47,12 @@ pub enum MacroToken {
     Replace(usize),
     /// separator, separator join type
     VarArg(Token, VarArgSeparator),
+    /// a conditional in a macro body, decided when the macro is expanded
+    Cond(Box<str>, bool),
+    /// the `else` of a conditional in a macro body
+    Else,
+    /// the `end` of a conditional in a macro body
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq)]

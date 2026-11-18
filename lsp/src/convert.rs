@@ -764,9 +764,9 @@ pub fn semantic_tokens_range(data: &[SemanticToken], range: Range) -> Vec<Semant
         if line > range.end.line || (line == range.end.line && character >= range.end.character) {
             continue;
         }
-        let delta_line = line - prev_line;
+        let delta_line = line.saturating_sub(prev_line);
         let delta_start = if delta_line == 0 {
-            character - prev_char
+            character.saturating_sub(prev_char)
         } else {
             character
         };
@@ -808,16 +808,12 @@ pub fn semantic_tokens(
         }
     }
     let attributes = attribute_tokens(tokens);
-    let mut prev_line = 0u32;
-    let mut prev_char = 0u32;
+    let mut positioned: Vec<(Position, u32, u32)> = Vec::with_capacity(tokens.len());
     for i in 0..tokens.len() {
         let (kind, span) = &tokens[i];
         if kind.is_terminator() {
             continue;
         }
-        // The previous token that is not a comment. A `---` line can stand
-        // between `x` and the `:` that types it, and looking only at `i - 1`
-        // would decide that `x` declares nothing.
         let mut before = i;
         while before > 0 && tokens.get(before - 1).is_some_and(|(k, _)| k.is_comment()) {
             before -= 1;
@@ -849,17 +845,26 @@ pub fn semantic_tokens(
         let Some(token_type) = token_type else {
             continue;
         };
-        let start = index.position(text, span.start.line, span.start.column);
-        let delta_line = start.line - prev_line;
+        positioned.push((
+            index.position(text, span.start.line, span.start.column),
+            utf16_len(&index, text, *span),
+            token_type,
+        ));
+    }
+    positioned.sort_unstable_by_key(|(start, _, _)| (start.line, start.character));
+    let mut prev_line = 0u32;
+    let mut prev_char = 0u32;
+    for (start, length, token_type) in positioned {
+        let delta_line = start.line.saturating_sub(prev_line);
         let delta_start = if delta_line == 0 {
-            start.character - prev_char
+            start.character.saturating_sub(prev_char)
         } else {
             start.character
         };
         data.push(SemanticToken {
             delta_line,
             delta_start,
-            length: utf16_len(&index, text, *span),
+            length,
             token_type,
             token_modifiers_bitset: 0,
         });
@@ -867,4 +872,121 @@ pub fn semantic_tokens(
         prev_char = start.character;
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duka_lib::duka_shared::errors::Position as SrcPosition;
+    use tower_lsp::lsp_types::{Position as LspPosition, TextDocumentContentChangeEvent};
+
+    fn span(line: u32, column: u32, len: u32) -> Span {
+        let start = SrcPosition {
+            line,
+            column,
+            at_char: line * 100 + column,
+        };
+        Span {
+            start,
+            end: SrcPosition {
+                column: column + len,
+                at_char: start.at_char + len,
+                ..start
+            },
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_are_monotonic_when_tokens_arrive_out_of_order() {
+        let text = "alpha beta\ngamma\n";
+        let tokens: Vec<Token> = vec![
+            (TokenKind::Ident("gamma".into()), span(2, 1, 5)),
+            (TokenKind::Ident("alpha".into()), span(1, 1, 5)),
+            (TokenKind::Ident("beta".into()), span(1, 7, 4)),
+        ];
+        let data = semantic_tokens(text, &tokens, &SymbolTable::default(), &HashMap::new());
+        assert_eq!(data.len(), 3);
+        let mut line = 0u32;
+        let mut character = 0u32;
+        for (i, token) in data.iter().enumerate() {
+            line += token.delta_line;
+            character = if token.delta_line == 0 {
+                character + token.delta_start
+            } else {
+                token.delta_start
+            };
+            assert!(token.delta_start < u32::MAX, "delta_start wrapped at {i}");
+        }
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn semantic_tokens_range_keeps_deltas_within_bounds() {
+        let data = vec![
+            SemanticToken {
+                delta_line: 0,
+                delta_start: 1,
+                length: 3,
+                token_type: SEMANTIC_VARIABLE,
+                token_modifiers_bitset: 0,
+            },
+            SemanticToken {
+                delta_line: 1,
+                delta_start: 0,
+                length: 2,
+                token_type: SEMANTIC_VARIABLE,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let range = Range::new(LspPosition::new(0, 0), LspPosition::new(1, 2));
+        let clipped = semantic_tokens_range(&data, range);
+        assert!(
+            clipped
+                .iter()
+                .all(|token| token.delta_line < u32::MAX && token.delta_start < u32::MAX)
+        );
+    }
+
+    #[test]
+    fn apply_change_accepts_a_range_past_the_end_of_text() {
+        let mut text = "abc".to_owned();
+        let change = TextDocumentContentChangeEvent {
+            range: Some(Range::new(LspPosition::new(9, 9), LspPosition::new(9, 12))),
+            range_length: None,
+            text: "X".to_owned(),
+        };
+        apply_change(&mut text, &change);
+        assert_eq!(text, "abcX");
+    }
+
+    #[test]
+    fn repeated_malformed_edits_leave_valid_utf8() {
+        let mut text = "a😀bé\nsecond".to_owned();
+        let positions = [
+            (0, 2),
+            (0, 3),
+            (5, 5),
+            (99, 99),
+            (0, 0),
+            (1, 0),
+            (1, 4),
+            (1, 100),
+        ];
+        for (i, &(line, character)) in positions.iter().enumerate() {
+            let change = TextDocumentContentChangeEvent {
+                range: Some(Range::new(
+                    LspPosition::new(line, character),
+                    LspPosition::new(line, character + 1),
+                )),
+                range_length: None,
+                text: if i % 2 == 0 {
+                    "X".to_owned()
+                } else {
+                    "😀".to_owned()
+                },
+            };
+            apply_change(&mut text, &change);
+            assert!(std::str::from_utf8(text.as_bytes()).is_ok());
+        }
+    }
 }

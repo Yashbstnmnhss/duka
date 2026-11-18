@@ -10,12 +10,15 @@
 //! waiting for it.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use duka_lib::duka_frontend::{analyzer::modules::ModuleBuildCache, parser::IncrementalParseCache};
+use duka_lib::duka_frontend::{
+    analyzer::{ScopeAnalysis, modules::ModuleBuildCache},
+    parser::IncrementalParseCache,
+};
 use duka_lib::duka_shared::{config::DukaParsingConfig, constants::SOURCE_SUFFIX};
 use duka_lib::kao::{self, Kao};
 use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
@@ -74,6 +77,23 @@ pub fn find_project(start: &Path) -> Option<Project> {
     })
 }
 
+fn scope_dependencies(scope: &ScopeAnalysis, out: &mut HashSet<PathBuf>) {
+    for module in scope.modules.values() {
+        let Some(path) = module.source.name.path() else {
+            continue;
+        };
+        if out.insert(path.to_path_buf()) {
+            scope_dependencies(&module.analysis, out);
+        }
+    }
+}
+
+fn dependencies_of(analysis: &DocAnalysis) -> HashSet<PathBuf> {
+    let mut out = HashSet::new();
+    scope_dependencies(&analysis.scope, &mut out);
+    out
+}
+
 /// Everything a request needs, captured at one revision. The `Arc`s let a
 /// snapshot outlive the workspace lock it was taken under, so two requests
 /// read the same analysis without serialising on the lock.
@@ -124,8 +144,12 @@ impl Pending {
 struct Document {
     text: Arc<String>,
     version: i32,
-    /// revision the snapshot was produced at, `0` while stale
+    /// clock value the snapshot was produced at, `0` while stale
     revision: u64,
+    /// clock value of the last invalidation of this document
+    invalidated_at: u64,
+    dependencies: HashSet<PathBuf>,
+    untracked: bool,
     analysis: Option<Arc<DocAnalysis>>,
     line_index: Option<Arc<LineIndex>>,
     parse_cache: Option<IncrementalParseCache>,
@@ -137,11 +161,14 @@ struct Document {
 }
 
 impl Document {
-    fn new(text: Arc<String>, version: i32) -> Self {
+    fn new(text: Arc<String>, version: i32, invalidated_at: u64) -> Self {
         Self {
             text,
             version,
             revision: 0,
+            invalidated_at,
+            dependencies: HashSet::new(),
+            untracked: false,
             analysis: None,
             line_index: None,
             parse_cache: None,
@@ -150,6 +177,10 @@ impl Document {
             gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
+
+    fn current(&self) -> bool {
+        self.analysis.is_some() && self.revision >= self.invalidated_at
+    }
 }
 
 /// A file that is not open in the editor but was analyzed for a project-wide
@@ -157,6 +188,10 @@ impl Document {
 /// buffer does not throw away the whole project index.
 struct DiskAnalysis {
     text: Arc<String>,
+    revision: u64,
+    invalidated_at: u64,
+    dependencies: HashSet<PathBuf>,
+    untracked: bool,
     analysis: Arc<DocAnalysis>,
     line_index: Arc<LineIndex>,
 }
@@ -179,7 +214,7 @@ impl Workspace {
     pub fn open(&mut self, uri: Url, text: String, version: i32) {
         self.revision += 1;
         self.docs
-            .insert(uri, Document::new(Arc::new(text), version));
+            .insert(uri, Document::new(Arc::new(text), version, self.revision));
     }
 
     /// Applies a full-text change.
@@ -225,8 +260,7 @@ impl Workspace {
                 doc.edit_at_char = Some(Self::first_changed_char(old_text, &text));
                 doc.text = Arc::new(text);
                 doc.version = version;
-                // the snapshot is stale, the next request rebuilds it
-                doc.revision = 0;
+                doc.invalidated_at = self.revision;
                 doc.analysis = None;
                 doc.line_index = None;
                 true
@@ -237,7 +271,7 @@ impl Workspace {
                 for change in changes {
                     crate::convert::apply_change(&mut text, change);
                 }
-                let mut doc = Document::new(Arc::new(text), version);
+                let mut doc = Document::new(Arc::new(text), version, self.revision);
                 doc.edit_at_char = Some(0);
                 self.docs.insert(uri.clone(), doc);
                 true
@@ -258,11 +292,62 @@ impl Workspace {
         self.docs.keys().cloned().collect()
     }
 
-    /// Invalidates every snapshot without touching a document. A file that
-    /// changed on disk is not an edit in any buffer, but it can still change
-    /// what a `require` resolves to, so the next request has to run again.
-    pub fn touch(&mut self) {
+    /// Invalidates the files that read `changed`, directly or through a chain
+    /// of `require`s. A file whose analysis recorded no modules may read any
+    /// file, so it is invalidated on every change.
+    pub fn invalidate_dependents(&mut self, changed: &Path) {
         self.revision += 1;
+        let mut affected = HashSet::new();
+        affected.insert(changed.to_path_buf());
+        loop {
+            let mut grew = false;
+            for (uri, doc) in &self.docs {
+                let Ok(path) = uri.to_file_path() else {
+                    continue;
+                };
+                if affected.contains(&path) {
+                    continue;
+                }
+                if doc.dependencies.iter().any(|dep| affected.contains(dep)) {
+                    affected.insert(path);
+                    grew = true;
+                }
+            }
+            for (path, entry) in &self.disk {
+                if affected.contains(path) {
+                    continue;
+                }
+                if entry.dependencies.iter().any(|dep| affected.contains(dep)) {
+                    affected.insert(path.clone());
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let now = self.revision;
+        let stale: Vec<Url> = self
+            .docs
+            .iter()
+            .filter_map(|(uri, doc)| {
+                let hit = uri
+                    .to_file_path()
+                    .is_ok_and(|path| affected.contains(&path))
+                    || doc.untracked;
+                hit.then(|| uri.clone())
+            })
+            .collect();
+        for uri in stale {
+            if let Some(doc) = self.docs.get_mut(&uri) {
+                doc.invalidated_at = now;
+                doc.analysis = None;
+                doc.line_index = None;
+            }
+            self.build_caches.remove(&uri.to_string());
+        }
+        self.disk
+            .retain(|path, entry| !affected.contains(path) && !entry.untracked);
     }
 
     /// Paths of the open documents, a module that is being edited must be read
@@ -285,7 +370,7 @@ impl Workspace {
     /// each request pay for a full analysis of the file.
     pub fn snapshot(&self, uri: &Url) -> Option<Snapshot> {
         let doc = self.docs.get(uri)?;
-        if doc.revision != self.revision {
+        if !doc.current() {
             return None;
         }
         Some(Snapshot {
@@ -393,10 +478,16 @@ impl Workspace {
 
     pub fn commit_disk(&mut self, path: PathBuf, text: Arc<String>, analysis: DocAnalysis) {
         let line_index = Arc::new(LineIndex::new(&text));
+        let dependencies = dependencies_of(&analysis);
+        let untracked = analysis.modules.is_none();
         self.disk.insert(
             path,
             DiskAnalysis {
                 text,
+                revision: self.revision,
+                invalidated_at: self.revision,
+                dependencies,
+                untracked,
                 analysis: Arc::new(analysis),
                 line_index,
             },
@@ -415,15 +506,14 @@ impl Workspace {
 
     pub fn disk_snapshot(&self, path: &Path) -> Option<Snapshot> {
         let entry = self.disk.get(path)?;
+        if entry.revision < entry.invalidated_at {
+            return None;
+        }
         Some(Snapshot {
             text: Arc::clone(&entry.text),
             analysis: Arc::clone(&entry.analysis),
             line_index: Arc::clone(&entry.line_index),
         })
-    }
-
-    pub fn invalidate_disk(&mut self, path: &Path) {
-        self.disk.remove(path);
     }
 
     /// Commits a finished run. `true` when it is the snapshot the document is
@@ -438,13 +528,15 @@ impl Workspace {
         text: &Arc<String>,
         analysis: DocAnalysis,
     ) -> (bool, Arc<DocAnalysis>) {
+        let dependencies = dependencies_of(&analysis);
+        let untracked = analysis.modules.is_none();
         let mut analysis = Arc::new(analysis);
         let parse_cache =
             Arc::get_mut(&mut analysis).and_then(|analysis| analysis.parse_cache.take());
         let Some(doc) = self.docs.get_mut(uri) else {
             return (false, analysis);
         };
-        if self.revision != revision {
+        if doc.invalidated_at > revision {
             if doc
                 .parse_cache_text
                 .as_ref()
@@ -454,7 +546,10 @@ impl Workspace {
             }
             return (false, analysis);
         }
-        doc.revision = revision;
+        doc.revision = self.revision;
+        doc.invalidated_at = self.revision;
+        doc.dependencies = dependencies;
+        doc.untracked = untracked;
         doc.analysis = Some(Arc::clone(&analysis));
         doc.line_index = Some(Arc::new(LineIndex::new(text)));
         doc.parse_cache = parse_cache;
@@ -573,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_document_invalidates_the_first() {
+    fn an_unrelated_document_leaves_the_first_snapshot_alone() {
         let mut workspace = Workspace::default();
         let a = uri("C:/proj/a.duka");
         let b = uri("C:/proj/b.duka");
@@ -582,13 +677,53 @@ mod tests {
         let revision = workspace.revision();
         workspace.open(b.clone(), "local y: int = 1".to_owned(), 1);
         workspace.analyze_now(&b).expect("b");
-        assert_ne!(
+        assert_eq!(
             workspace.analyzed_revision(&a),
-            Some(workspace.revision()),
-            "a module can reach any other, so a revision is workspace wide"
+            Some(revision),
+            "opening an unrelated file must not invalidate a's snapshot"
         );
-        workspace.analyze_now(&a).expect("a again");
-        assert!(workspace.analyzed_revision(&a).unwrap() > revision);
+        assert!(workspace.snapshot(&a).is_some());
+    }
+
+    #[test]
+    fn an_edit_to_a_required_module_invalidates_only_its_readers() {
+        let dir = std::env::temp_dir().join("duka-lsp-deps-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let module = dir.join("m.duka");
+        std::fs::write(&module, "export function f(): int return 1 end").unwrap();
+
+        let entry_path = dir.join("main.duka");
+        let entry = Url::from_file_path(&entry_path).unwrap();
+        let other = uri("C:/proj/other.duka");
+        let mut workspace = Workspace::default();
+        workspace.open(
+            entry.clone(),
+            "local m = require(\"./m\") local n: int = m.f()".to_owned(),
+            1,
+        );
+        workspace.open(other.clone(), "local z: int = 1".to_owned(), 1);
+        workspace.analyze_now(&entry).expect("entry");
+        workspace.analyze_now(&other).expect("other");
+        assert!(workspace.snapshot(&entry).is_some());
+        assert!(workspace.snapshot(&other).is_some());
+
+        std::fs::write(&module, "export function f(): string return \"s\" end").unwrap();
+        workspace.invalidate_dependents(&module);
+        assert!(
+            workspace.snapshot(&entry).is_none(),
+            "the importer reads the module and must be invalidated"
+        );
+        assert!(
+            workspace.snapshot(&other).is_some(),
+            "a file that never required the module keeps its snapshot"
+        );
+        let errors = &workspace.analyze_now(&entry).unwrap().errors;
+        assert!(
+            !errors.is_empty(),
+            "the new module type must reach the importer, got {errors:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -810,12 +945,12 @@ mod tests {
         assert!(workspace.disk_snapshot(&path).is_some());
         assert!(workspace.open_uri_for_path(&path).is_none());
 
-        workspace.touch();
+        workspace.invalidate_dependents(Path::new("C:/elsewhere/other.duka"));
         assert!(
             workspace.disk_snapshot(&path).is_some(),
             "an edit in another buffer leaves this file's analysis alone"
         );
-        workspace.invalidate_disk(&path);
+        workspace.invalidate_dependents(&path);
         assert!(workspace.disk_snapshot(&path).is_none());
     }
 }

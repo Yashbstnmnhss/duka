@@ -15,7 +15,8 @@ use std::path::Path as SourcePath;
 use std::sync::Arc;
 
 use crate::{
-    analyzer::prelude::inject_type_prelude,
+    analyzer::builtin::TYPE_BUILTINS_META,
+    analyzer::prelude::{inject_type_builtins, inject_type_prelude},
     analyzer::typechecker::ModuleValue,
     analyzer::{AnalyzerData, ScopeAnalysis, ScopeAnalyzer, TypeChecker, TypeEval, Visit, Visitor},
     lexer::LexerWithMacro,
@@ -394,6 +395,7 @@ fn collect_module(
         ..analysis
     };
     errors.extend(inject_type_prelude(&mut full));
+    inject_type_builtins(&mut full, &TYPE_BUILTINS_META, &config);
     let (typed, eval_errs) =
         TypeEval.analyze_with_provider(&chunk, (config.clone(), full), Some(provider));
     errors.extend(eval_errs);

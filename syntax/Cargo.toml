@@ -1,0 +1,8 @@
+[package]
+name = "duka-syntax"
+description = "Syntax tree for incremental parsing of duka"
+authors = ["AogangSolang"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]

@@ -1042,6 +1042,20 @@ enum CacheToken {
     ExpandEnd,
 }
 
+#[derive(Clone, Copy)]
+struct CondFrame {
+    parent: bool,
+    cond: bool,
+    seen_else: bool,
+}
+
+impl CondFrame {
+    #[inline(always)]
+    fn taking(&self) -> bool {
+        self.parent && (self.cond != self.seen_else)
+    }
+}
+
 pub struct LexerWithMacro<Source>
 where
     Source: Read,
@@ -1051,24 +1065,41 @@ where
     expanding: Vec<MacroExpanding>,
     cache: Vec<CacheToken>,
     predefined_macros: Option<Builtins<MacroFunc>>,
+
+    conds: Vec<CondFrame>,
 }
 
 const KW_DEFINE: &str = "define";
-const KW_ENIFED: &str = "enifed";
+const KW_END: &str = "end";
 const KW_UNDEF: &str = "undef";
 const KW_IFDEF: &str = "ifdef";
-const KW_FEDFI: &str = "fedfi";
+const KW_IFNDEF: &str = "ifndef";
 
 impl<Source: Read> LexerWithMacro<Source> {
     pub fn new(source: Source, source_name: SourceName, config: DukaLexerConfig) -> Self {
-        Self {
+        let mut this = Self {
             inner: Lexer::new(source, source_name, config),
             macros: HashMap::new(),
             expanding: vec![],
             cache: vec![],
             predefined_macros: None,
+            conds: vec![],
+        };
+        this.predefine_platform_macros();
+        this
+    }
+
+    fn predefine_platform_macros(&mut self) {
+        let names = [
+            format!("OS_{}", std::env::consts::OS.to_uppercase()),
+            format!("ARCH_{}", std::env::consts::ARCH.to_uppercase()),
+            format!("FAMILY_{}", std::env::consts::FAMILY.to_uppercase()),
+        ];
+        for name in names {
+            self.predefine(name, [TokenKind::Int(1)]);
         }
     }
+
     pub fn with(&mut self, registry: &LexerMacroRegistry) {
         for (name, tokens) in &registry.replacements {
             self.macros.insert(name.clone(), (0, tokens.to_vec()));
@@ -1090,72 +1121,100 @@ impl<Source: Read> LexerWithMacro<Source> {
         self.predefined_macros = Some(macros)
     }
 
+    fn taking(&self) -> bool {
+        self.conds.iter().all(CondFrame::taking)
+    }
+
     fn do_macro(&mut self) -> Result<Token, DukaSpannedError> {
         loop {
             let tk = self._next()?;
             match tk.0 {
                 TokenKind::Reflex => self.do_reflex()?,
-                TokenKind::LSplicer => self.do_splicer()?,
+                TokenKind::LSplicer => {
+                    if self.taking() {
+                        self.do_splicer()?;
+                    }
+                }
+                _ if !self.taking() => (),
                 _ => break Ok(tk),
             }
         }
     }
 
     fn do_reflex(&mut self) -> Result<(), DukaSpannedError> {
-        let keyword = self._must_ident()?;
-
-        match keyword.as_str() {
-            KW_DEFINE => {
-                let name = self._must_ident()?;
-                let params = if self._then(TokenKind::LParen)? && !self._then(TokenKind::RParen)? {
-                    if self._then(TokenKind::Dots)? {
-                        self._must(TokenKind::RParen)?;
-                        vec![]
-                    } else {
-                        let first = self._must_ident()?;
-                        let mut params = vec![first];
-
-                        while self._then(TokenKind::Comma)? {
-                            if self._then(TokenKind::Dots)? {
-                                break;
-                            }
-                            let item = self._must_ident()?;
-                            params.push(item);
-                        }
-
-                        self._must(TokenKind::RParen)?;
-                        params
-                    }
-                } else {
-                    vec![]
-                };
-
-                let single = self._then(TokenKind::Arrow)?;
-                let body = self.do_macro_body(&params, single)?;
-                self.macros.insert(name, (params.len(), body));
-            }
-            KW_UNDEF => {
-                let name = self._must_ident()?;
-                self.macros.remove(&name);
-            }
-            KW_IFDEF => {
-                let name = self._must_ident()?;
-                if !self.macros.contains_key(&name) {
-                    loop {
-                        let (t, _) = self._next()?;
-                        if matches!(t, TokenKind::Reflex)
-                            && self._must_ident().is_ok_and(|s| s == KW_FEDFI)
-                        {
-                            break;
-                        }
-                        if t.is_terminator() {
-                            return Err(self._expected(KW_FEDFI));
-                        }
-                    }
+        let (keyword, span) = self._next()?;
+        match keyword {
+            TokenKind::End => {
+                if self.conds.pop().is_none() {
+                    return Err(DukaSpannedError::new(
+                        DukaMacroError::UnexpectedToken(KW_END.into()).into(),
+                        span,
+                        self.inner.source_info(),
+                    ));
                 }
+                return Ok(());
             }
-            KW_FEDFI => (),
-            _ => return Err(self._expected(KW_DEFINE)),
+            TokenKind::Else => match self.conds.last_mut() {
+                Some(top) if !top.seen_else => {
+                    top.seen_else = true;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(DukaSpannedError::new(
+                        DukaMacroError::SingleElse.into(),
+                        span,
+                        self.inner.source_info(),
+                    ));
+                }
+            },
+            TokenKind::Ident(keyword) => match keyword.as_str() {
+                KW_DEFINE => {
+                    let name = self._must_ident()?;
+                    let params =
+                        if self._then(TokenKind::LParen)? && !self._then(TokenKind::RParen)? {
+                            if self._then(TokenKind::Dots)? {
+                                self._must(TokenKind::RParen)?;
+                                vec![]
+                            } else {
+                                let first = self._must_ident()?;
+                                let mut params = vec![first];
+
+                                while self._then(TokenKind::Comma)? {
+                                    if self._then(TokenKind::Dots)? {
+                                        break;
+                                    }
+                                    let item = self._must_ident()?;
+                                    params.push(item);
+                                }
+
+                                self._must(TokenKind::RParen)?;
+                                params
+                            }
+                        } else {
+                            vec![]
+                        };
+
+                    let single = self._then(TokenKind::Arrow)?;
+                    let body = self.do_macro_body(&params, single)?;
+                    self.macros.insert(name, (params.len(), body));
+                }
+                KW_UNDEF => {
+                    let name = self._must_ident()?;
+                    self.macros.remove(&name);
+                }
+                KW_IFDEF | KW_IFNDEF => {
+                    let positive = keyword == KW_IFDEF;
+                    let name = self._must_ident()?;
+                    let cond = self.macros.contains_key(&name) == positive;
+                    self.conds.push(CondFrame {
+                        parent: self.taking(),
+                        cond,
+                        seen_else: false,
+                    });
+                }
+                _ => return Err(self._expected("macro keyword")),
+            },
+            _ => return Err(self._expected("macro keyword")),
         }
         Ok(())
     }
@@ -1263,6 +1322,7 @@ impl<Source: Read> LexerWithMacro<Source> {
                 res.push(MacroToken::Token(tk.0));
             }
         } else {
+            let mut cond_depth = 0usize;
             loop {
                 let tk = self._next()?;
 
@@ -1292,14 +1352,33 @@ impl<Source: Read> LexerWithMacro<Source> {
                         continue;
                     }
                     TokenKind::Reflex => {
-                        (self._must_ident()? == KW_ENIFED).or_else_error(|| {
-                            DukaSpannedError::new(
-                                DukaMacroError::UnexpectedToken(KW_ENIFED.into()).into(),
-                                tk.1,
-                                self.inner.source_info(),
-                            )
-                        })?;
-                        break;
+                        let (next, span) = self._next()?;
+                        match next {
+                            TokenKind::End if cond_depth == 0 => break,
+                            TokenKind::End => {
+                                cond_depth -= 1;
+                                res.push(MacroToken::End);
+                            }
+                            TokenKind::Else => res.push(MacroToken::Else),
+                            TokenKind::Ident(name) if name == KW_IFDEF => {
+                                let cond_name = self._must_ident()?;
+                                res.push(MacroToken::Cond(cond_name.into_boxed_str(), true));
+                                cond_depth += 1;
+                            }
+                            TokenKind::Ident(name) if name == KW_IFNDEF => {
+                                let cond_name = self._must_ident()?;
+                                res.push(MacroToken::Cond(cond_name.into_boxed_str(), false));
+                                cond_depth += 1;
+                            }
+                            _ => {
+                                return Err(DukaSpannedError::new(
+                                    DukaMacroError::UnexpectedToken("macro keyword".into()).into(),
+                                    span,
+                                    self.inner.source_info(),
+                                ));
+                            }
+                        }
+                        continue;
                     }
                     _ => (),
                 }
@@ -1536,45 +1615,81 @@ impl<Source: Read> LexerWithMacro<Source> {
                 ));
             };
 
-            let expanded = tokens
-                .iter()
-                .flat_map(|tk| match tk {
-                    MacroToken::Replace(index) => params
-                        .get(*index)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(kind, _)| (kind, call_site))
-                        .collect::<Vec<_>>(),
-                    MacroToken::VarArg(separator, ty) => {
-                        let input_len = params.len();
-                        if input_len < *params_count {
-                            return vec![];
-                        }
-                        let len = input_len - params_count;
-                        params[*params_count..].iter().enumerate().fold(
-                            vec![],
-                            |mut vec: Vec<(TokenKind, Span)>, (i, tks)| {
-                                (i == 0
-                                    && matches!(ty, VarArgSeparator::Left | VarArgSeparator::All))
-                                .then(|| vec.push(separator.clone()));
-
-                                vec.extend(tks.clone());
-
-                                (i < len - 1).then(|| vec.push(separator.clone()));
-
-                                (i == len - 1
-                                    && matches!(ty, VarArgSeparator::Right | VarArgSeparator::All))
-                                .then(|| vec.push(separator.clone()));
-
-                                vec
-                            },
-                        )
+            let mut conds: Vec<CondFrame> = vec![];
+            let mut expanded: Vec<(TokenKind, Span)> = vec![];
+            for tk in tokens {
+                match tk {
+                    MacroToken::Cond(name, positive) => {
+                        let cond = self.macros.contains_key(name.as_ref()) == *positive;
+                        conds.push(CondFrame {
+                            parent: conds.iter().all(CondFrame::taking),
+                            cond,
+                            seen_else: false,
+                        });
                     }
-                    MacroToken::Token(tk) => vec![(tk.clone(), call_site)],
-                })
-                .map(CacheToken::Token)
-                .rev();
+                    MacroToken::Else => {
+                        if let Some(top) = conds.last_mut() {
+                            top.seen_else = true;
+                        }
+                    }
+                    MacroToken::End => {
+                        conds.pop();
+                    }
+                    _ => {
+                        if !conds.iter().all(CondFrame::taking) {
+                            continue;
+                        }
+                        match tk {
+                            MacroToken::Replace(index) => expanded.extend(
+                                params
+                                    .get(*index)
+                                    .cloned()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|(kind, _)| (kind, call_site)),
+                            ),
+                            MacroToken::VarArg(separator, ty) => {
+                                let input_len = params.len();
+                                if input_len >= *params_count {
+                                    let len = input_len - params_count;
+                                    expanded.extend(
+                                        params[*params_count..].iter().enumerate().fold(
+                                            vec![],
+                                            |mut vec: Vec<(TokenKind, Span)>, (i, tks)| {
+                                                (i == 0
+                                                    && matches!(
+                                                        ty,
+                                                        VarArgSeparator::Left
+                                                            | VarArgSeparator::All
+                                                    ))
+                                                .then(|| vec.push(separator.clone()));
+
+                                                vec.extend(tks.clone());
+
+                                                (i < len - 1).then(|| vec.push(separator.clone()));
+
+                                                (i == len - 1
+                                                    && matches!(
+                                                        ty,
+                                                        VarArgSeparator::Right
+                                                            | VarArgSeparator::All
+                                                    ))
+                                                .then(|| vec.push(separator.clone()));
+
+                                                vec
+                                            },
+                                        ),
+                                    );
+                                }
+                            }
+                            MacroToken::Token(tk) => expanded.push((tk.clone(), call_site)),
+                            _ => (),
+                        }
+                    }
+                }
+            }
+
+            let expanded = expanded.into_iter().map(CacheToken::Token).rev();
 
             let mut res = vec![];
             res.push(CacheToken::ExpandEnd);

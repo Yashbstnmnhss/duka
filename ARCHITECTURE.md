@@ -21,9 +21,14 @@ duka/
 ├── ffi/             # FFI bridge
 ├── lsp/             # Language server (hover, go-to, completions)
 ├── backend-wasm/    # WASM target for web deployment
-├── dukao/           # Package manager and test runner
-├── app/             # Binary target
-└── tests/           # Integration tests
+├── dukao/           # Package manager, building tools and test runner
+├── app/             # Binary target wrapper for binary output
+├── capi/            # C bridge
+├── syntax/          # Incremental parsing support
+├── extension/       # Vscode extension of duka, used with lsp
+├── dbg/             # Debugger for duka
+├── printer/         # Universal display string builder for duka
+└── tests/           # Pure duka tests
 ```
 
 ## Compilation Pipeline
@@ -43,9 +48,9 @@ ScopeAnalyzer → Symbol table, upvalue tracking
     ↓
 BasicAnalyzer → Basic type info
     ↓
-TypeEval → Type evaluation
+TypeEval → Type evaluation (Checker)
     ↓
-TypeChecker → Type validation
+TypeChecker → Type validation (Checker)
     ↓
 IRGenerator → DukaIR (intermediate representation)
     ↓
@@ -118,6 +123,8 @@ The VM is a register-based interpreter with coroutine support.
 
 ### Instruction Set
 
+See `backend`
+
 Instructions use ABC/ABKb/ABN/ASn addressing modes:
 
 | Category   | Operations                             |
@@ -143,6 +150,8 @@ Instructions use ABC/ABKb/ABN/ASn addressing modes:
 Tables support metamethods (`__index`, `__newindex`, `__call`, `__gc`, `__add`, etc.).
 
 ## Garbage Collector
+
+See `gc`
 
 Tri-color mark-and-sweep collector with page-based allocation.
 
@@ -191,7 +200,7 @@ Compiles to module table population and return.
 
 ### Lexical Replacement
 
-`^#define` / `^#enifed` blocks for token-level replacement:
+`^#define` / `^#end` blocks for token-level replacement:
 
 ```cpp
 ^#define PI -> 3.1415926;
@@ -240,9 +249,9 @@ Web deployment target:
 - **Semantic tokens**: Keywords, types, functions, variables, properties
 - **Completions**: Symbol-based with kind classification
 
-## CLI
+## Dukao
 
-`duka-cli` provides:
+`dukao` provides:
 
 - `init` - Create new project
 - `build` - Compile to bytecode
@@ -250,8 +259,19 @@ Web deployment target:
 - `test` - Run tests
 - `add`/`remove`/`install` - Package management
 
-## References
+## Cli
 
-- [CraftingInterpreters](https://craftinginterpreters.com/)
-- [BuildLuaInRust](https://wubingzheng.github.io/build-lua-in-rust/zh)
-- [Lua5.4Manual](https://www.lua.org/manual/5.4/manual.html)
+`duka-cli` provides:
+
+- `pipeline` - Compilation pipeline
+- `doc-gen` - Documents generator for built-in or current kao project
+- `repl` - REPL mode (default)
+
+## Dbg
+
+`duka-dbg` provides:
+
+- `<path>` - Target source file
+- `-b <line>` - Breakpoint at given line
+- `no_break_on_error` - Disable auto breaking when raising errors
+- `<script_args>*` - Operations by strings

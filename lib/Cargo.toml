@@ -19,6 +19,9 @@ default = ["docs", "os", "io", "ffi", "json"]
 docs = [
     "duka-backend/docs"
 ]
+debug = [
+    "duka-backend/debug"
+]
 os = [
     "duka-backend/os"
 ]

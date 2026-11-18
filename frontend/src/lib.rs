@@ -287,6 +287,81 @@ break
     }
 
     #[test]
+    fn parser_emits_statement_nodes() {
+        let source = "local a = 1\nlocal b = 2\nreturn a + b\n";
+        let (_, _, cache) =
+            Parser::parse_lenient_incremental(from_string!(source), Default::default(), None, None);
+        let tree = cache.syntax_tree().unwrap();
+        assert_eq!(tree.text(), source);
+        let statements = tree
+            .root
+            .children()
+            .iter()
+            .filter(|child| child.kind() == duka_syntax::KIND_STMT)
+            .count();
+        assert_eq!(statements, 3);
+    }
+
+    #[test]
+    fn parser_emits_a_lossless_syntax_tree() {
+        let source = "local s = \"😀\"  -- note\nlocal n: int = 1\nreturn n\n";
+        let (_, errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(source), Default::default(), None, None);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(cache.syntax_tree().unwrap().text(), source);
+
+        let byte = source.find("= 1").unwrap();
+        let changed_at = source[..byte].chars().count() as u32;
+        let new = source.replace("= 1", "= 2");
+        let (_, errors, cache) = Parser::parse_lenient_incremental(
+            from_string!(&new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(cache.syntax_tree().unwrap().text(), new);
+    }
+
+    #[test]
+    fn incremental_parse_survives_syntax_errors() {
+        let old = "local a = \nlocal b = 2\nreturn a + b\n";
+        let (_, old_errors, cache) =
+            Parser::parse_lenient_incremental(from_string!(old), Default::default(), None, None);
+        assert!(
+            !old_errors.is_empty(),
+            "the first line must be a syntax error"
+        );
+        assert!(
+            cache.is_safe(),
+            "an error must not disable incremental reuse"
+        );
+
+        let new = "local a = \nlocal b = 20\nreturn a + b\n";
+        let changed_at = old.find("local b").unwrap() as u32;
+        let (incremental, incremental_errors, cache) = Parser::parse_lenient_incremental(
+            from_string!(&new),
+            Default::default(),
+            Some(cache),
+            Some(changed_at),
+        );
+        assert!(
+            !incremental_errors.is_empty(),
+            "an error before the edit must be carried over"
+        );
+        let (full, full_errors) = Parser::parse_lenient(from_string!(&new), Default::default());
+        assert_eq!(incremental.block, full.block);
+        assert_eq!(
+            incremental_errors
+                .iter()
+                .map(|e| e.span)
+                .collect::<Vec<_>>(),
+            full_errors.iter().map(|e| e.span).collect::<Vec<_>>(),
+        );
+        assert!(cache.is_safe());
+    }
+
+    #[test]
     fn incremental_parse_tracks_split_type_closers() {
         let old = "local a: array<array<int>> = {{1}}\nlocal tail = 1\nreturn tail\n";
         let (_, errors, cache) =
@@ -423,13 +498,87 @@ logic! {
     }
 
     #[test]
+    fn platform_macro_test() {
+        let os = format!("OS_{}", std::env::consts::OS.to_uppercase());
+        let arch = format!("ARCH_{}", std::env::consts::ARCH.to_uppercase());
+        let family = format!("FAMILY_{}", std::env::consts::FAMILY.to_uppercase());
+        let src = format!(
+            "^#ifdef {os}\n1\n^#else\n0\n^#end\n^#ifdef {arch}\n2\n^#end\n^#ifndef {family}\n0\n^#else\n3\n^#end"
+        );
+        let mut lex = from_string!(src.as_str()).tokens.into_iter();
+        expect_kinds! { lex match
+            TokenKind::Int(1),
+            TokenKind::Int(2),
+            TokenKind::Int(3),
+        }
+    }
+
+    #[test]
+    fn macro_cond_nested_test() {
+        let mut lex = from_string!(
+            r#"
+            ^#ifdef A
+                1
+                ^#ifdef B
+                    2
+                ^#else
+                    3
+                ^#end
+                4
+            ^#else
+                5
+            ^#end
+            "#
+        )
+        .tokens
+        .into_iter();
+        expect_kinds! { lex match
+            TokenKind::Int(5),
+        }
+    }
+
+    #[test]
+    fn macro_body_cond_uses_state_at_expansion_test() {
+        let mut lex = from_string!(
+            r#"
+            ^#define X()
+                ^#ifdef A
+                    1
+                ^#else
+                    2
+                ^#end
+            ^#end
+            ^#define A
+            ^#end
+            [:X():]
+            "#
+        )
+        .tokens
+        .into_iter();
+        expect_kinds! { lex match
+            TokenKind::Int(1),
+        }
+    }
+
+    #[test]
+    fn macro_cond_stray_end_test() {
+        let err = LexerWithMacro::new(
+            Cursor::new("^#end\n1"),
+            SourceName::Unnamed,
+            Default::default(),
+        )
+        .tokenize();
+        assert!(err.is_err(), "a stray ^#end must be reported");
+    }
+
+    #[test]
     #[should_panic]
     fn macro_recursion_test() {
         let _ = from_string!(
             r#"
             ^#define test()
                 [:test():]
-            ^#enifed
+            ^#end
             [:test():]
         "#
         );
@@ -446,7 +595,7 @@ logic! {
                 [:~tuple($...(,)):],
                 end
             ):]
-        ^#enifed
+        ^#end
 
         --^#define A1(...) -> {$...[;)};
 
@@ -469,7 +618,7 @@ logic! {
 
     #[test]
     fn macro_builtin_depth_isolation_test() {
-        let mut src = String::from("^#define foo()\n    [:counter!():]\n^#enifed\n");
+        let mut src = String::from("^#define foo()\n    [:counter!():]\n^#end\n");
         for _ in 0..300 {
             src.push_str("[:foo():]\n");
         }
@@ -495,7 +644,7 @@ logic! {
             r#"
             ^#define foo()
                 [:counter!():]
-            ^#enifed
+            ^#end
             [:when!(true, 1 2 3, 0):]
         "#
         )

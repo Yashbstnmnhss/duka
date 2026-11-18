@@ -37,12 +37,22 @@ pub struct Debugger {
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) mode: Option<DebugAction>,
     pub(crate) pause_depth: Option<usize>,
-    pub(crate) last_pause_pc: Option<usize>,
     pub(crate) paused_frames: Vec<DebugFrameInfo>,
     pub(crate) break_on_error: bool,
+    pub(crate) paused_on_error: bool,
+    pub(crate) last_pause_span: Option<Span>,
+    pub(crate) bp_skip: Option<(std::ops::Range<usize>, Span)>,
 }
 
 impl Debugger {
+    pub fn paused_on_error(&self) -> bool {
+        self.paused_on_error
+    }
+
+    pub fn get_breakpoints(&self) -> &[Breakpoint] {
+        &self.breakpoints
+    }
+
     pub fn break_on_error(&mut self, val: bool) {
         self.break_on_error = val
     }
@@ -66,7 +76,7 @@ impl Debugger {
     pub fn set_action(&mut self, action: DebugAction, depth: usize) {
         self.mode = Some(action);
         self.pause_depth = Some(depth);
-        self.last_pause_pc = None;
+        self.paused_on_error = false;
     }
 
     pub fn get_frames_info(&self) -> &[DebugFrameInfo] {

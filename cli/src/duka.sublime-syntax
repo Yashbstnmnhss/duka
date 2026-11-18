@@ -11,7 +11,7 @@ variables:
     # 宏关键字
     macro_keywords: >
         (?x)
-        \b(define|enifed|undef|ifdef|fedfi)\b
+        \b(define|end|undef|ifdef|ifndef|else)\b
 
 contexts:
     main:

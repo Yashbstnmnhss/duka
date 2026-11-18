@@ -86,14 +86,14 @@ a = [:PI:]
 ```
 
 `->` captures tokens until `;` by default. To capture more, drop the arrow and
-mark the end with `^#enifed`. `undef` removes a defined macro.
+mark the end with `^#end`. `undef` removes a defined macro.
 
 Replacement variables match identifiers starting with `$`:
 
 ```cpp
 ^#define MAX(a, b)
 if $a >= $b then $a else $b end
-^#enifed
+^#end
 ```
 
 `[:MAX(1, 2):]` becomes `if 1 >= 2 then 1 else 2 end`.

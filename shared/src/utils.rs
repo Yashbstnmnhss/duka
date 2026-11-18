@@ -58,15 +58,12 @@ mod span_index_tests {
     }
 
     #[test]
-    fn a_backfill_at_an_unrelated_span_reaches_the_nearest_declaration() {
+    fn a_backfill_at_an_unrelated_span_writes_nothing() {
         let mut table = SymbolTable::with_global();
         table.declare_variable("a", at(10), false);
         table.declare_variable("b", at(100), false);
         table.set_type_at_span(at(50), "int".into());
-        assert_eq!(
-            table.symbol_at_span(at(10)).unwrap().ty_display.as_deref(),
-            Some("int")
-        );
+        assert_eq!(table.symbol_at_span(at(10)).unwrap().ty_display, None);
         assert_eq!(table.symbol_at_span(at(100)).unwrap().ty_display, None);
     }
 }
@@ -1002,7 +999,7 @@ impl SymbolTable {
         }
     }
     pub fn set_type_at_span(&mut self, span: Span, ty: Box<str>) {
-        if let Some(id) = self.locate_id(span, true)
+        if let Some(id) = self.locate_id(span, false)
             && let Some(sym) = self.symbol_mut_by_id(id)
         {
             sym.ty_display = Some(ty);
@@ -1011,7 +1008,7 @@ impl SymbolTable {
     /// Stores the analysed type next to the rendered one, so consumers that
     /// need to walk the type do not have to parse it back out of text
     pub fn set_type_value_at_span(&mut self, span: Span, ty: Arc<Type>) {
-        if let Some(id) = self.locate_id(span, true)
+        if let Some(id) = self.locate_id(span, false)
             && let Some(sym) = self.symbol_mut_by_id(id)
         {
             sym.ty = Some(ty);
@@ -1209,6 +1206,50 @@ impl<'a> SymbolTableViewer<'a> {
     }
     pub fn lookup_label(&self, key: &str) -> Option<Span> {
         self.inner.lookup_label_in(key, self.current)
+    }
+}
+
+macro_rules! impl_marker {
+    (impl $who: ident for $($targets: path),+) => {
+        $(
+            impl $who for $targets {}
+        )+
+    };
+}
+
+pub trait Discrete: PartialOrd + Copy {}
+
+impl_marker!(
+    impl Discrete for
+    u8, i8, char,
+    u16, i16,
+    u32, i32,
+    u64, i64,
+    u128, i128
+);
+
+pub trait Continuous: PartialOrd + Copy {}
+
+impl_marker!(
+    impl Continuous for
+    f32,
+    f64
+);
+
+/// For integers, the successor of current integer
+pub trait Successor: Sized {
+    /// Get the successor of current number
+    fn succ(self) -> Option<Self>;
+}
+
+impl Successor for isize {
+    fn succ(self) -> Option<Self> {
+        self.checked_add(1)
+    }
+}
+impl Successor for usize {
+    fn succ(self) -> Option<Self> {
+        self.checked_add(1)
     }
 }
 

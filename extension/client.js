@@ -8,6 +8,10 @@ const { LanguageClient, State } = require('vscode-languageclient/node')
 
 let client
 let channel
+let extensionContext
+let deactivating = false
+let restartTimer
+let restartDelay = 1000
 
 const EXE = process.platform === 'win32' ? 'duka-lsp.exe' : 'duka-lsp'
 
@@ -25,13 +29,14 @@ const SCHEME = 'duka-virtual'
  * document the reader ends up looking at is a real one: the server analyses it
  * like any other, and hover, completion and goto work inside it.
  */
-function declaredFiles(client) {
+function declaredFiles() {
     return {
         provideTextDocumentContent(uri) {
-            // An object, because a bare string is not a named parameter: the JSON-RPC
-            // layer wraps anything that is not an object literal in an array, and the
-            // server would be asked to read a list where a uri is.
-            return client.sendRequest('duka/declaredFile', { uri: uri.toString() })
+            const current = client
+            if (!current) {
+                return Promise.resolve('')
+            }
+            return current.sendRequest('duka/declaredFile', { uri: uri.toString() })
         },
     }
 }
@@ -42,6 +47,14 @@ function log(line) {
         channel.appendLine(`[${stamp}] ${line}`)
     }
     console.log(`[duka] ${line}`)
+}
+
+function isFile(file) {
+    try {
+        return fs.statSync(file).isFile()
+    } catch {
+        return false
+    }
 }
 
 function candidatesFrom(root) {
@@ -73,7 +86,7 @@ function findServer() {
     const configured = workspace.getConfiguration('duka').get('lsp.path')
     if (configured) {
         log(`duka.lsp.path = ${configured}`)
-        if (fs.existsSync(configured)) {
+        if (isFile(configured)) {
             return configured
         }
         log('duka.lsp.path does not exist, falling back to discovery')
@@ -83,20 +96,20 @@ function findServer() {
     for (const folder of workspace.workspaceFolders || []) {
         roots.push(folder.uri.fsPath)
     }
-    if (vscode.context && vscode.context.extensionPath) {
-        roots.push(vscode.context.extensionPath)
+    if (extensionContext && extensionContext.extensionPath) {
+        roots.push(extensionContext.extensionPath)
     }
     log(`search roots: ${roots.length ? roots.join(', ') : '<none: no folder open>'}`)
     for (const root of roots) {
         for (const candidate of candidatesFrom(root)) {
-            if (fs.existsSync(candidate)) {
+            if (isFile(candidate)) {
                 log(`discovered ${candidate}`)
                 return candidate
             }
         }
     }
     for (const candidate of candidatesFromPath()) {
-        if (fs.existsSync(candidate)) {
+        if (isFile(candidate)) {
             log(`discovered in PATH: ${candidate}`)
             return candidate
         }
@@ -104,14 +117,44 @@ function findServer() {
     return null
 }
 
-function activate(context) {
-    channel = window.createOutputChannel('Duka Language')
-    context.subscriptions.push(channel)
-    log('activate() called')
+function stopClient() {
+    if (restartTimer) {
+        clearTimeout(restartTimer)
+        restartTimer = undefined
+    }
+    const running = client
+    client = undefined
+    if (!running) {
+        return Promise.resolve()
+    }
+    return running
+        .stop()
+        .catch((err) => log(`stop failed: ${err && err.message ? err.message : err}`))
+}
 
+function scheduleRestart(reason) {
+    if (deactivating || restartTimer) {
+        return
+    }
+    log(`restarting in ${restartDelay}ms (${reason})`)
+    restartTimer = setTimeout(() => {
+        restartTimer = undefined
+        stopClient()
+            .then(() => startClient())
+            .then(() => {
+                restartDelay = 1000
+            })
+            .catch((err) => {
+                log(`restart failed: ${err && err.message ? err.message : err}`)
+                restartDelay = Math.min(restartDelay * 2, 15000)
+                scheduleRestart('restart failed')
+            })
+    }, restartDelay)
+}
+
+async function startClient() {
     const serverPath = findServer()
     if (!serverPath) {
-        log('duka-lsp executable not found in any target/debug or target/release above the roots')
         window.showErrorMessage(
             'duka-lsp executable not found. Build it with "cargo build -p duka-lsp" or set "duka.lsp.path".',
         )
@@ -139,36 +182,62 @@ function activate(context) {
         },
     }
 
-    client = new LanguageClient('dukaLanguage', 'Duka Language', serverOptions, clientOptions)
-    context.subscriptions.push(
-        vscode.workspace.registerTextDocumentContentProvider(SCHEME, declaredFiles(client)),
+    const startedClient = new LanguageClient(
+        'dukaLanguage',
+        'Duka Language',
+        serverOptions,
+        clientOptions,
     )
-    client.onDidChangeState((event) => {
+    client = startedClient
+    startedClient.onDidChangeState((event) => {
         log(`state -> ${State[event.newState]}`)
+        if (
+            event.newState === State.Stopped &&
+            !deactivating &&
+            client === startedClient
+        ) {
+            scheduleRestart('server stopped')
+        }
     })
 
     const started = Date.now()
-    client
-        .start()
-        .then(() => {
-            log(`client ready in ${Date.now() - started}ms`)
-            window.setStatusBarMessage('Duka: language server connected', 5000)
-        })
-        .catch((err) => {
-            const message = err && err.message ? err.message : String(err)
-            log(`start failed after ${Date.now() - started}ms: ${message}`)
-            window.showErrorMessage(`Failed to start duka-lsp (${serverPath}): ${message}`)
-            client = undefined
-        })
+    await startedClient.start()
+    log(`client ready in ${Date.now() - started}ms`)
+    window.setStatusBarMessage('Duka: language server connected', 5000)
+}
+
+function activate(context) {
+    channel = window.createOutputChannel('Duka Language')
+    context.subscriptions.push(channel)
+    extensionContext = context
+    deactivating = false
+    log('activate() called')
+
+    context.subscriptions.push(
+        workspace.registerTextDocumentContentProvider(SCHEME, declaredFiles()),
+    )
+    context.subscriptions.push(
+        workspace.onDidChangeConfiguration((event) => {
+            if (
+                event.affectsConfiguration('duka.lsp.path') ||
+                event.affectsConfiguration('duka.modulePaths')
+            ) {
+                log('configuration changed, restarting')
+                scheduleRestart('configuration changed')
+            }
+        }),
+    )
+
+    startClient().catch((err) => {
+        const message = err && err.message ? err.message : String(err)
+        log(`start failed: ${message}`)
+        window.showErrorMessage(`Failed to start duka-lsp: ${message}`)
+    })
 }
 
 function deactivate() {
-    if (!client) {
-        return undefined
-    }
-    const running = client
-    client = undefined
-    return running.stop()
+    deactivating = true
+    return stopClient()
 }
 
 module.exports = { activate, deactivate }

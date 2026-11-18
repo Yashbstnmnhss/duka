@@ -69,6 +69,14 @@ dukao serve [--port 3000]
 `dukao run <path>` also accepts a project directory; bare `dukao run` walks up
 to the nearest `kao.toml`.
 
+### For `duka-dbg` debugger
+
+```shell
+duka-dbg <file> -b <line> # Add breakpoint at given line
+duka-dbg <file> <args>*   # Pass operations by strings in arguments
+duka-dbg <file> --no_break_on_error # Disable auto breaking when raising errors
+```
+
 ## Program shape
 
 ```duka

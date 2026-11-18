@@ -11,14 +11,14 @@ use duka_shared::{
     config::StrictConfig,
     constants::csugar,
     dtype::{
-        Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Subject, Type, TypeVar,
+        Brand, Constraint, FunctionType, Label, ObjectId, Pattern, Pred, Subject, Type, TypeVar,
         self_marker, substitute_self, to_vars,
     },
     effects::{EFFECT_ATOMS, Effect, EffectSet},
     errors::{DukaErrorKind, DukaSemanticError, DukaSpannedError, Span},
     types::{BinOp, DukaAnalyzer, SourceInfo, UnOp},
     utils::{SymbolTableViewer, SymbolType},
-    value::ConstValue,
+    value::{ConstValue, DukaFloat, DukaFloatWrapper, DukaInt},
 };
 
 use crate::analyzer::{BindingKind, BuiltinRules, GenericBinding, ModuleType, attributes};
@@ -259,7 +259,8 @@ impl TypeChecker {
         let module_value = ctx.module_value(tail);
 
         let (errors, backfills) = ctx.finish();
-        data.1.module_value = module_value;        for (id, span, ty, value) in backfills {
+        data.1.module_value = module_value;
+        for (id, span, ty, value) in backfills {
             match id {
                 Some(id) => {
                     data.1.symbols.set_type_display(id, ty);
@@ -2861,10 +2862,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         continue;
                     }
                     let actual = if let Some(ty) = tys.get(idx) {
-                        let cv = match exprs.get(idx) {
-                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
-                            _ => None,
-                        };
+                        let cv = exprs.get(idx).and_then(const_value_of);
                         (ty.clone(), cv)
                     } else {
                         // past the slots the call names, the tail says what a
@@ -2885,28 +2883,33 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                     if has_value
                         && !self.from_implicit_unknown(exprs.get(idx))
                         && let Some(declared) = &declared
-                        && !self.accepts_value(declared, &actual.0, actual.1.as_ref())
                     {
-                        // The value is wrong and the type it was asked to be is
-                        // where the reader has to go next, so the annotation is
-                        // pointed at rather than left for them to find.
-                        let asked_for =
-                            ty.as_ref()
-                                .and_then(|desc| desc.span())
-                                .map(|where_written| {
-                                    (
-                                        "the type it was asked to be is written here".into(),
-                                        where_written,
-                                    )
-                                });
-                        self.err_opt_related(
-                            DukaSemanticError::TypeMismatchEqual(
-                                self.display_type(declared),
-                                self.display_type(&actual.0),
-                            ),
-                            exprs.get(idx).map(|e| e.1).unwrap_or(*span),
-                            asked_for,
-                        );
+                        let checked = type_has_pattern(declared)
+                            .then(|| pattern_check_actual(exprs.get(idx), &actual.0))
+                            .flatten()
+                            .unwrap_or_else(|| actual.0.clone());
+                        if !self.accepts_value(declared, &checked, actual.1.as_ref()) {
+                            // The value is wrong and the type it was asked to be is
+                            // where the reader has to go next, so the annotation is
+                            // pointed at rather than left for them to find.
+                            let asked_for =
+                                ty.as_ref()
+                                    .and_then(|desc| desc.span())
+                                    .map(|where_written| {
+                                        (
+                                            "the type it was asked to be is written here".into(),
+                                            where_written,
+                                        )
+                                    });
+                            self.err_opt_related(
+                                DukaSemanticError::TypeMismatchEqual(
+                                    self.display_type(declared),
+                                    self.display_type(&actual.0),
+                                ),
+                                exprs.get(idx).map(|e| e.1).unwrap_or(*span),
+                                asked_for,
+                            );
+                        }
                     }
 
                     let lowered = class_named(self, name.as_str());
@@ -2967,10 +2970,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                 let (tys, var_arg) = self.infer_expr_list(exprs);
                 for (idx, target) in targets.iter().enumerate() {
                     let actual = if let Some(ty) = tys.get(idx) {
-                        let cv = match exprs.get(idx) {
-                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
-                            _ => None,
-                        };
+                        let cv = exprs.get(idx).and_then(const_value_of);
                         (ty.clone(), cv)
                     } else {
                         // past the slots the call names, the tail says what a
@@ -3025,8 +3025,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
 
                         let accepted = match self.lookup_type(name) {
                             Some(declared) => {
+                                let checked = type_has_pattern(&declared)
+                                    .then(|| pattern_check_actual(exprs.get(idx), &actual.0))
+                                    .flatten()
+                                    .unwrap_or_else(|| actual.0.clone());
                                 if !self.from_implicit_unknown(exprs.get(idx))
-                                    && !self.accepts_value(&declared, &actual.0, actual.1.as_ref())
+                                    && !self.accepts_value(&declared, &checked, actual.1.as_ref())
                                 {
                                     self.err(
                                         DukaSemanticError::TypeMismatchAssign(
@@ -3080,10 +3084,7 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         );
                     }
                     for (idx, ty) in tys.into_iter().enumerate() {
-                        let cv = match items.get(idx) {
-                            Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
-                            _ => None,
-                        };
+                        let cv = items.get(idx).and_then(const_value_of);
                         let expected = match fixeds.get(idx).cloned() {
                             Some(t) => t,
                             // past the named slots, the tail says what a value
@@ -3097,8 +3098,12 @@ impl<'a> Visitor for TypeCheckerCtx<'a> {
                         if mentions_param(&expected) {
                             continue;
                         }
+                        let checked = type_has_pattern(&expected)
+                            .then(|| pattern_check_actual(items.get(idx), &ty))
+                            .flatten()
+                            .unwrap_or_else(|| ty.clone());
                         if !self.from_implicit_unknown(items.get(idx))
-                            && !self.accepts_value(&expected, &ty, cv.as_ref())
+                            && !self.accepts_value(&expected, &checked, cv.as_ref())
                         {
                             self.err(
                                 DukaSemanticError::TypeMismatchReturn(
@@ -3583,6 +3588,9 @@ impl TypeCheckerCtx<'_> {
                 match op {
                     UnOp::Minus => match &ty {
                         Type::Int | Type::Float => ty,
+                        Type::Pattern(p) if matches!(p.base, Type::Int | Type::Float) => {
+                            negate_pattern(p).unwrap_or_else(|| p.base.clone())
+                        }
                         Type::Unknown => Type::Unknown,
                         other => self
                             .meta_result(other, MetaMethod::Unm.name())
@@ -3644,11 +3652,9 @@ impl TypeCheckerCtx<'_> {
                 | BinOp::Pow => {
                     let lt = self.infer_expr(a);
                     let rt = self.infer_expr(b);
-                    let exponent = match &b.0 {
-                        NodeKind::Literal(cv) => Some(cv.clone()),
-                        _ => None,
-                    };
-                    self.numeric_binary(op, &lt, &rt, b.1, exponent.as_ref())
+                    let right_cv = const_value_of(b);
+                    let left_cv = const_value_of(a);
+                    self.numeric_binary(op, &lt, &rt, b.1, left_cv.as_ref(), right_cv.as_ref())
                 }
                 BinOp::Pipeline(_) | BinOp::PipelineL => match op {
                     BinOp::Pipeline(_) => self.infer_pipe_fold(b, a, op),
@@ -4269,7 +4275,8 @@ impl TypeCheckerCtx<'_> {
         left: &Type,
         right: &Type,
         span: Span,
-        exponent: Option<&ConstValue>,
+        left_cv: Option<&ConstValue>,
+        right_cv: Option<&ConstValue>,
     ) -> Type {
         // an operand the checker knows nothing about hands back nothing: the
         // result is `unknown` too, not `any`
@@ -4279,7 +4286,7 @@ impl TypeCheckerCtx<'_> {
         // a local is nilable in default, so the operands are unions. `T? + T?`
         // is still `T?`: distribute over the members so the unit survives.
         if (matches!(left, Type::Union(_)) || matches!(right, Type::Union(_)))
-            && let Some(answer) = self.distribute_numeric(op, left, right, span, exponent)
+            && let Some(answer) = self.distribute_numeric(op, left, right, span, right_cv)
         {
             return answer;
         }
@@ -4293,6 +4300,9 @@ impl TypeCheckerCtx<'_> {
                     .unwrap_or_else(|| operator_fallback(&[left, right]));
             }
         };
+        if let Some(pattern) = affine_pattern(op, left, right, base.clone(), left_cv, right_cv) {
+            return pattern;
+        }
         let ll = left.brand().map(|b| &b.label);
         let rl = right.brand().map(|b| &b.label);
         let label = match op {
@@ -4342,7 +4352,7 @@ impl TypeCheckerCtx<'_> {
                         );
                         return Type::Any;
                     }
-                    Some(Label::Unit(a)) => match exponent {
+                    Some(Label::Unit(a)) => match right_cv {
                         Some(ConstValue::Int(n)) => Some(Label::Unit(a.pow(*n as i32))),
                         Some(other) => {
                             self.err(
@@ -4427,7 +4437,7 @@ impl TypeCheckerCtx<'_> {
         let mut answers = Vec::new();
         for l in &lefts {
             for r in &rights {
-                answers.push(self.numeric_binary(op, l, r, span, exponent));
+                answers.push(self.numeric_binary(op, l, r, span, None, exponent));
             }
         }
         if left_nil || right_nil {
@@ -5258,10 +5268,14 @@ impl TypeCheckerCtx<'_> {
                 Some(Node(NodeKind::Literal(cv), _)) => Some(cv.clone()),
                 _ => None,
             };
+            let checked = type_has_pattern(formal)
+                .then(|| pattern_check_actual(args.get(idx), actual))
+                .flatten()
+                .unwrap_or_else(|| actual.clone());
             if !self.from_implicit_unknown(args.get(idx))
                 && !objects::accepts_value(
                     formal,
-                    actual,
+                    &checked,
                     cv.as_ref(),
                     self.env.objects,
                     &self
@@ -6638,6 +6652,155 @@ fn operator_fallback(types: &[&Type]) -> Type {
         _ => false,
     });
     if opaque { Type::Any } else { Type::Unknown }
+}
+
+fn literal_type(e: &Expr) -> Option<Type> {
+    const_value_of(e).map(Type::Literal)
+}
+
+fn const_value_of(e: &Expr) -> Option<ConstValue> {
+    match &e.0 {
+        NodeKind::Literal(cv) => Some(cv.clone()),
+        NodeKind::Unary(inner, UnOp::Minus) => match &inner.0 {
+            NodeKind::Literal(ConstValue::Int(n)) => Some(ConstValue::Int(-n)),
+            NodeKind::Literal(ConstValue::Float(f)) => Some(ConstValue::Float(-f)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn type_has_pattern(ty: &Type) -> bool {
+    match ty {
+        Type::Pattern(_) => true,
+        Type::Array(Some(inner)) => type_has_pattern(inner),
+        Type::Union(us) => us.iter().any(type_has_pattern),
+        Type::TypeTuple(items, rest) => {
+            items.iter().any(type_has_pattern) || rest.as_deref().is_some_and(type_has_pattern)
+        }
+        _ => false,
+    }
+}
+
+enum PatternLinear {
+    Int { mul: DukaInt, add: DukaInt },
+    Float { mul: DukaFloat, add: DukaFloat },
+}
+
+fn apply_pattern_linear(pat: &Pattern, base: Type, linear: PatternLinear) -> Option<Type> {
+    let pred = match (&pat.pred, linear) {
+        (Pred::Int(p), PatternLinear::Int { mul, add }) => {
+            let mapped = p.try_map(
+                |x| x.checked_mul(mul).and_then(|x| x.checked_add(add)),
+                mul < 0,
+            )?;
+            Pred::Int(mapped)
+        }
+        (Pred::Num(p), PatternLinear::Float { mul, add }) => {
+            let mapped = p.try_map(|x| Some(DukaFloatWrapper::from(x.0 * mul + add)), mul < 0.0)?;
+            Pred::Num(mapped)
+        }
+        (Pred::Num(p), PatternLinear::Int { mul, add }) => {
+            let mapped = p.try_map(
+                |x| {
+                    Some(DukaFloatWrapper::from(
+                        x.0 * mul as DukaFloat + add as DukaFloat,
+                    ))
+                },
+                mul < 0,
+            )?;
+            Pred::Num(mapped)
+        }
+        _ => return None,
+    };
+    Some(Type::Pattern(Box::new(Pattern { base, pred })))
+}
+
+fn affine_pattern(
+    op: &BinOp,
+    left: &Type,
+    right: &Type,
+    base: Type,
+    left_cv: Option<&ConstValue>,
+    right_cv: Option<&ConstValue>,
+) -> Option<Type> {
+    let (pat, cv, on_left) = match (left, right, left_cv, right_cv) {
+        (Type::Pattern(p), _, _, Some(cv)) => (p, cv, false),
+        (_, Type::Pattern(p), Some(cv), _) => (p, cv, true),
+        _ => return None,
+    };
+    let linear = match cv {
+        ConstValue::Int(c) => match (&pat.pred, op, on_left) {
+            (Pred::Int(_), BinOp::Add, _) => PatternLinear::Int { mul: 1, add: *c },
+            (Pred::Int(_), BinOp::Sub, false) => PatternLinear::Int {
+                mul: 1,
+                add: c.checked_neg()?,
+            },
+            (Pred::Int(_), BinOp::Sub, true) => PatternLinear::Int { mul: -1, add: *c },
+            (Pred::Int(_), BinOp::Multiply, _) if *c != 0 => PatternLinear::Int { mul: *c, add: 0 },
+            (_, BinOp::Add, _) => PatternLinear::Float {
+                mul: 1.0,
+                add: *c as DukaFloat,
+            },
+            (_, BinOp::Sub, false) => PatternLinear::Float {
+                mul: 1.0,
+                add: -(*c as DukaFloat),
+            },
+            (_, BinOp::Sub, true) => PatternLinear::Float {
+                mul: -1.0,
+                add: *c as DukaFloat,
+            },
+            (_, BinOp::Multiply, _) => PatternLinear::Float {
+                mul: *c as DukaFloat,
+                add: 0.0,
+            },
+            (_, BinOp::Divide, false) if *c != 0 => PatternLinear::Float {
+                mul: 1.0 / *c as DukaFloat,
+                add: 0.0,
+            },
+            _ => return None,
+        },
+        ConstValue::Float(c) => match (op, on_left) {
+            (BinOp::Add, _) => PatternLinear::Float { mul: 1.0, add: *c },
+            (BinOp::Sub, false) => PatternLinear::Float { mul: 1.0, add: -c },
+            (BinOp::Sub, true) => PatternLinear::Float { mul: -1.0, add: *c },
+            (BinOp::Multiply, _) => PatternLinear::Float { mul: *c, add: 0.0 },
+            (BinOp::Divide, false) if *c != 0.0 => PatternLinear::Float {
+                mul: 1.0 / c,
+                add: 0.0,
+            },
+            _ => return None,
+        },
+        _ => return None,
+    };
+    apply_pattern_linear(pat, base, linear)
+}
+
+fn negate_pattern(pat: &Pattern) -> Option<Type> {
+    let linear = match pat.pred {
+        Pred::Int(_) => PatternLinear::Int { mul: -1, add: 0 },
+        Pred::Num(_) => PatternLinear::Float {
+            mul: -1.0,
+            add: 0.0,
+        },
+        Pred::Text(_) => return None,
+    };
+    apply_pattern_linear(pat, pat.base.clone(), linear)
+}
+
+fn pattern_check_actual(expr: Option<&Expr>, inferred: &Type) -> Option<Type> {
+    let Node(NodeKind::Array(items), _) = expr? else {
+        return None;
+    };
+    let Type::TypeTuple(elems, rest) = inferred else {
+        return None;
+    };
+    let checked = items
+        .iter()
+        .zip(elems)
+        .map(|(e, ty)| literal_type(e).unwrap_or_else(|| ty.clone()))
+        .collect();
+    Some(Type::TypeTuple(checked, rest.clone()))
 }
 
 /// The type a `typeof` kind test proves, for the members that had no type to

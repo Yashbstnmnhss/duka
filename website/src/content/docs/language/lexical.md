@@ -51,8 +51,8 @@ Like preprocessor in C/C++, duka supports following macros at lexical time:
 
 - `^#define`:
     - `^#define Name -> Token;` for single token replacement
-    - `^#define Name(params) ... ^#enifed` for multiple tokens replacement
+    - `^#define Name(params) ... ^#end` for multiple tokens replacement
 - `^#undef`: to undefine defined replacement
-- `^#ifdef ... ... ^#fedfi`: check if target has been defined, if not, code wrapped in won't be included in this file.
+- `^#ifdef ... ^#else ... ^#end`: check if target has been defined, if not, code wrapped in won't be included in this file. `^#else` is optional (`^#ifndef` is the inverse).
 
 See [Macros](../macros).

@@ -33,6 +33,7 @@ use duka_gc::{Trace, Tracer};
 use duka_macros::Info;
 use duka_shared::{
     constants::{MetaMethod, ctype, cvm},
+    errors::Span,
     types::ValueCount,
     utils::OrError,
     value::{DukaFloat, DukaInt},
@@ -777,68 +778,81 @@ impl Trace for Coroutine {
 
 #[cfg(feature = "debug")]
 impl CoState {
-    fn current_breakpoint<'a>(&self, debugger: &'a Debugger) -> Option<&'a Breakpoint> {
-        if debugger.breakpoints.is_empty() {
-            return None;
-        }
-
+    fn current_statement(&self) -> Option<(&SourceName, std::ops::Range<usize>, Span)> {
         let frame = self.frames.last()?;
         let proto = match &frame.proto {
             CallProto::Main { proto, .. } | CallProto::Call { proto, .. } => proto,
         };
         let info = &proto.func.debug_info;
-        let span = info
-            .inst_spans
-            .iter()
-            .find_map(|(r, s)| r.contains(&self.pc).then_some(*s))?;
+        let (range, span) = info.inst_spans.iter().find(|(r, _)| r.contains(&self.pc))?;
+        Some((&info.source_name, range.clone(), *span))
+    }
+
+    fn current_breakpoint<'a>(&self, debugger: &'a Debugger) -> Option<&'a Breakpoint> {
+        if debugger.breakpoints.is_empty() {
+            return None;
+        }
+
+        let (source_name, _, span) = self.current_statement()?;
 
         debugger.breakpoints.iter().find(|bp| {
             bp.enabled
-                && bp.source_name == info.source_name
+                && bp.source_name == *source_name
                 && (bp.line == span.start.line || bp.line == span.end.line)
         })
     }
 
     fn should_break(&self, debugger: &mut Debugger) -> bool {
+        let Some((_, range, span)) = self.current_statement() else {
+            return false;
+        };
+
         if self.current_breakpoint(debugger).is_some() {
-            debugger.pause_depth = Some(self.frames.len());
-            debugger.last_pause_pc = Some(self.pc);
-            return true;
+            let skip = debugger
+                .bp_skip
+                .as_ref()
+                .is_some_and(|(r, s)| *s == span && self.pc != r.start);
+            if !skip {
+                debugger.bp_skip = Some((range, span));
+                debugger.pause_depth = Some(self.frames.len());
+                debugger.last_pause_span = Some(span);
+                return true;
+            }
+        } else {
+            debugger.bp_skip = None;
         }
+
+        let fire = |debugger: &mut Debugger| {
+            debugger.pause_depth = Some(self.frames.len());
+            debugger.last_pause_span = Some(span);
+            debugger.bp_skip = None;
+            true
+        };
 
         match debugger.mode {
             // 跳入, 及不管深度, 每一步都断
             Some(DebugAction::StepIn) => {
-                if debugger.last_pause_pc == Some(self.pc) {
-                    false
-                } else {
-                    debugger.last_pause_pc = Some(self.pc);
-                    debugger.pause_depth = Some(self.frames.len());
-                    true
+                if debugger.last_pause_span != Some(span) {
+                    return fire(debugger);
                 }
             }
             // 跳过, 仍然保持相同的深度
             Some(DebugAction::StepOver) => {
                 let target = debugger.pause_depth.unwrap_or(self.frames.len());
-                if self.frames.len() <= target {
-                    debugger.last_pause_pc = Some(self.pc);
-                    true
-                } else {
-                    false
+                if self.frames.len() <= target && debugger.last_pause_span != Some(span) {
+                    return fire(debugger);
                 }
             }
             // 跳出, 至少跳到比这个深度高一层的地方
             Some(DebugAction::StepOut) => {
                 let start = debugger.pause_depth.unwrap_or(usize::MAX);
                 if self.frames.len() < start {
-                    debugger.last_pause_pc = Some(self.pc);
-                    true
-                } else {
-                    false
+                    return fire(debugger);
                 }
             }
-            Some(DebugAction::Continue) | None => false,
+            Some(DebugAction::Continue) | None => {}
         }
+        false
     }
 
     pub fn create_debug_frames(&self) -> Vec<DebugFrameInfo> {
@@ -980,6 +994,18 @@ impl CoState {
                 let $ty($($id),*) = $target else {
                     return Err(InvalidValueType(stringify!($ty)));
                 };
+            };
+        }
+        macro_rules! debug_break {
+            () => {
+                #[cfg(feature = "debug")]
+                if let Some(debugger) = api.debugger.as_ref() {
+                    let mut d = debugger.borrow_mut();
+                    if self.should_break(&mut d) {
+                        d.paused_frames = self.create_debug_frames();
+                        return Ok(CoAction::Break);
+                    }
+                }
             };
         }
         macro_rules! vm {
@@ -1477,6 +1503,7 @@ impl CoState {
                 }
                 Jump(offset) => {
                     vm!(move offset);
+                    debug_break!();
                     continue; // already moved, dont vm!(continue)
                 }
                 Test(from, target) => {
@@ -1492,6 +1519,7 @@ impl CoState {
                     let val = vm!(R(from));
                     if val.eval_to_bool() != target {
                         vm!(move offset);
+                        debug_break!();
                         continue;
                     }
                 }
@@ -1534,6 +1562,7 @@ impl CoState {
                         if let Ok(limit) = limit {
                             if !for_number_check(init, limit, step.is_negative()) {
                                 vm!(move end_offset);
+                                debug_break!();
                                 continue;
                             } else {
                                 vm!(R(a + 1) := Int(limit));
@@ -1541,6 +1570,7 @@ impl CoState {
                             }
                         } else {
                             vm!(move end_offset); // this will move to the last code of inner block
+                            debug_break!();
                             continue;
                         }
                     } else {
@@ -1552,6 +1582,7 @@ impl CoState {
 
                         if !for_number_check(init, limit, step.is_sign_negative()) {
                             vm!(move end_offset);
+                            debug_break!();
                             continue;
                         } else {
                             // then loop
@@ -1575,6 +1606,7 @@ impl CoState {
 
                         if for_number_check(new, limit, neg_step) {
                             vm!(move - (start_offset as isize)); // 回跳 to_start
+                            debug_break!();
                             continue;
                         }
                     } else {
@@ -1590,6 +1622,7 @@ impl CoState {
 
                         if for_number_check(new, limit, neg_step) {
                             vm!(move - (start_offset as isize)); // 回跳 to_start
+                            debug_break!();
                             continue;
                         }
                     }
@@ -1598,6 +1631,7 @@ impl CoState {
                 TForPrepare(_, offset) => {
                     cast!(as offset: isize);
                     vm!(move offset);
+                    debug_break!();
                     continue;
                 }
                 TForCall(a, nres) => {
@@ -1635,6 +1669,7 @@ impl CoState {
                         ValueCount::Exact(nres + 1),
                         false,
                     )?;
+                    debug_break!();
                     continue 'inst;
                 }
                 TForLoop(a, offset) => {
@@ -1643,6 +1678,7 @@ impl CoState {
                     let res = *vm!(R(a + 3)); //第一个返回时代表是否继续
                     if matches!(res, RuntimeValue::Bool(true)) {
                         vm!(move -offset);
+                        debug_break!();
                         continue;
                     }
                 }
@@ -1693,6 +1729,7 @@ impl CoState {
                     // callee from its first instruction
                     vm!(move 1);
                     self.call(heap, api, func, narg.into(), nwanted.into(), false)?;
+                    debug_break!();
                     continue 'inst;
                 }
                 TailCall(func, narg, nwanted) => {
@@ -1705,6 +1742,7 @@ impl CoState {
                     {
                         return Ok(CoAction::Return(from as Address, ValueCount::Exact(n)));
                     }
+                    debug_break!();
                     continue 'inst;
                 }
 
