@@ -436,7 +436,16 @@ impl Workspace {
     }
 
     /// Forgets every discovered manifest, so the next analysis re-reads them.
+    /// A manifest can change any document's config, module graph and search
+    /// paths, so every open snapshot has to be rebuilt on the next request.
     pub fn invalidate_projects(&mut self) {
+        self.revision += 1;
+        let now = self.revision;
+        for doc in self.docs.values_mut() {
+            doc.invalidated_at = now;
+            doc.analysis = None;
+            doc.line_index = None;
+        }
         self.projects.clear();
         self.disk.clear();
         self.build_caches.clear();
@@ -927,6 +936,30 @@ mod tests {
         );
         workspace.invalidate_projects();
         assert!(workspace.project_for_dir(&dir).is_some());
+    }
+
+    #[test]
+    fn a_manifest_change_invalidates_open_snapshots() {
+        let dir = std::env::temp_dir().join("duka-lsp-manifest-invalidate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("kao.toml"), "[kao]\nname = \"first\"\n").unwrap();
+        let entry_path = dir.join("main.duka");
+        std::fs::write(&entry_path, "return 1\n").unwrap();
+        let entry = Url::from_file_path(&entry_path).unwrap();
+
+        let mut workspace = Workspace::default();
+        workspace.open(entry.clone(), "return 1\n".to_owned(), 1);
+        workspace.analyze_now(&entry).expect("first analysis");
+        assert!(workspace.snapshot(&entry).is_some());
+
+        std::fs::write(dir.join("kao.toml"), "[kao]\nname = \"second\"\n").unwrap();
+        workspace.invalidate_projects();
+        assert!(
+            workspace.snapshot(&entry).is_none(),
+            "a manifest change must invalidate open snapshots: their config is stale"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

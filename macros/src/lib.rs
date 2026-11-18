@@ -13,6 +13,7 @@ mod errors;
 mod history;
 mod info;
 mod instructions;
+mod span_map;
 mod user_data;
 mod visitors;
 
@@ -38,6 +39,12 @@ pub fn derive_auto_visitor(input: proc_macro::TokenStream) -> proc_macro::TokenS
     let input = parse_macro_input!(input as DeriveInput);
     generate_visitors(input, false).into()
 }
+#[proc_macro_derive(SpanMut, attributes(span_ignore))]
+pub fn derive_span_mut(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    span_map::generate_span_map(input).into()
+}
+
 /// # Auto mutable visitor
 /// Attached with `VisitMut` and `VisitorMut`.
 /// You can customize trait names with `visit_mut_trait`, `visitor_mut_trait` attributes, defaults are `VisitMut` `VisitorMut`

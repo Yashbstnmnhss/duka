@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use duka_syntax::{
-    GreenBuilder, KIND_CHUNK, KIND_STMT, KIND_TOKEN_BASE, KIND_TRIVIA, Kind, SyntaxTree, TextRange,
-};
+use duka_syntax::{KIND_STMT, KIND_TOKEN_BASE, Kind, SyntaxTree, TextRange};
 
 use ast::{
     AttrTypedName, Attrs, BangCollected, Block, DukaChunk, Expr, Field, FuncBody, FunctionSig, If,
@@ -253,7 +251,6 @@ pub struct Parser<T> {
     depth: usize,
     saving_mode: bool,
     saved: Vec<Token>,
-    emitter: Option<SyntaxEmitter>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,92 +285,103 @@ fn token_kind_code(kind: &TokenKind) -> Kind {
     KIND_TOKEN_BASE + (hash % 4096) as Kind
 }
 
-#[derive(Debug, Clone)]
-enum EmitEvent {
-    Token { kind: Kind, range: TextRange },
-    Start { kind: Kind },
-    Finish,
-}
-
-#[derive(Debug, Clone, Default)]
-struct SyntaxEmitter {
-    events: Vec<EmitEvent>,
-}
-
-impl SyntaxEmitter {
-    fn token(&mut self, kind: Kind, range: TextRange) {
-        self.events.push(EmitEvent::Token { kind, range });
-    }
-
-    fn start(&mut self, kind: Kind) {
-        self.events.push(EmitEvent::Start { kind });
-    }
-
-    fn finish(&mut self) {
-        self.events.push(EmitEvent::Finish);
-    }
-
-    fn into_tree(self, source: &str) -> SyntaxTree {
-        let mut offsets: Vec<usize> = source.char_indices().map(|(index, _)| index).collect();
-        offsets.push(source.len());
-        let total = offsets.len().saturating_sub(1) as u32;
-        let slice = |range: TextRange| {
-            let from = offsets
-                .get(range.start.get() as usize)
-                .copied()
-                .unwrap_or(source.len());
-            let to = offsets
-                .get(range.end.get() as usize)
-                .copied()
-                .unwrap_or(source.len())
-                .min(source.len());
-            source.get(from..to).unwrap_or("")
-        };
-        let mut builder = GreenBuilder::new(KIND_CHUNK);
-        let mut cursor = 0u32;
-        for event in self.events {
-            match event {
-                EmitEvent::Start { kind } => builder.start_node(kind),
-                EmitEvent::Finish => builder.finish_node(),
-                EmitEvent::Token { kind, range } => {
-                    if range.end.get() <= cursor {
-                        continue;
-                    }
-                    if range.start.get() > cursor {
-                        builder.token(
-                            KIND_TRIVIA,
-                            slice(TextRange::new(cursor, range.start.get())),
-                        );
-                    }
-                    builder.token(
-                        kind,
-                        slice(TextRange::new(
-                            range.start.get().max(cursor),
-                            range.end.get(),
-                        )),
-                    );
-                    cursor = range.end.get();
-                }
+fn tree_events_from_tokens(tokens: &[Token], source: &str) -> Vec<duka_syntax::TreeEvent> {
+    let offsets = char_offsets(source);
+    let slice = |from: u32, to: u32| {
+        let from = offsets.get(from as usize).copied().unwrap_or(source.len());
+        let to = offsets
+            .get(to as usize)
+            .copied()
+            .unwrap_or(source.len())
+            .min(source.len());
+        source.get(from..to).unwrap_or("").to_owned()
+    };
+    let total = offsets.len().saturating_sub(1) as u32;
+    let mut events = vec![];
+    let mut cursor = 0u32;
+    let mut in_statement = false;
+    let mut last_line = 0u32;
+    for (kind, span) in tokens {
+        if kind.is_terminator() {
+            continue;
+        }
+        let start = span.start.at_char;
+        let end = span.end.at_char;
+        if kind.is_comment() {
+            if in_statement {
+                events.push(duka_syntax::TreeEvent::FinishNode);
+                in_statement = false;
             }
+            if start > cursor {
+                events.push(duka_syntax::TreeEvent::Token(duka_syntax::NewToken {
+                    kind: duka_syntax::KIND_TRIVIA,
+                    range: TextRange::new(cursor, start),
+                    text: slice(cursor, start),
+                }));
+            }
+            events.push(duka_syntax::TreeEvent::Token(duka_syntax::NewToken {
+                kind: duka_syntax::KIND_TRIVIA,
+                range: TextRange::new(start, end),
+                text: slice(start, end),
+            }));
+            cursor = end;
+            last_line = span.end.line;
+            continue;
         }
-        if cursor < total {
-            builder.token(KIND_TRIVIA, slice(TextRange::new(cursor, total)));
+        if in_statement && span.start.line > last_line {
+            events.push(duka_syntax::TreeEvent::FinishNode);
+            in_statement = false;
         }
-        SyntaxTree {
-            root: builder.finish(),
+        if start > cursor {
+            events.push(duka_syntax::TreeEvent::Token(duka_syntax::NewToken {
+                kind: duka_syntax::KIND_TRIVIA,
+                range: TextRange::new(cursor, start),
+                text: slice(cursor, start),
+            }));
+        }
+        if !in_statement {
+            events.push(duka_syntax::TreeEvent::StartNode(KIND_STMT));
+            in_statement = true;
+        }
+        events.push(duka_syntax::TreeEvent::Token(duka_syntax::NewToken {
+            kind: token_kind_code(kind),
+            range: TextRange::new(start, end),
+            text: slice(start, end),
+        }));
+        cursor = end;
+        last_line = span.end.line;
+        if matches!(kind, TokenKind::SemiColon) {
+            events.push(duka_syntax::TreeEvent::FinishNode);
+            in_statement = false;
         }
     }
+    if in_statement {
+        events.push(duka_syntax::TreeEvent::FinishNode);
+    }
+    if cursor < total {
+        events.push(duka_syntax::TreeEvent::Token(duka_syntax::NewToken {
+            kind: duka_syntax::KIND_TRIVIA,
+            range: TextRange::new(cursor, total),
+            text: slice(cursor, total),
+        }));
+    }
+    events
 }
 
-#[cfg(test)]
+fn char_offsets(source: &str) -> Vec<usize> {
+    let mut offsets: Vec<usize> = source.char_indices().map(|(index, _)| index).collect();
+    offsets.push(source.len());
+    offsets
+}
+
 impl IncrementalParseCache {
-    pub fn is_safe(&self) -> bool {
-        self.safe
+    pub fn syntax_tree(&self) -> Option<&SyntaxTree> {
+        self.tree.as_ref()
     }
 
     #[cfg(test)]
-    pub fn syntax_tree(&self) -> Option<&SyntaxTree> {
-        self.tree.as_ref()
+    pub fn is_safe(&self) -> bool {
+        self.safe
     }
 }
 
@@ -408,7 +416,6 @@ impl Parser<Token> {
             depth: 0,
             saved: vec![],
             saving_mode: false,
-            emitter: None,
         }
     }
 
@@ -713,18 +720,6 @@ impl Parser<Token> {
         })
     }
 
-    fn emit_start(&mut self, kind: Kind) {
-        if let Some(emitter) = self.emitter.as_mut() {
-            emitter.start(kind);
-        }
-    }
-
-    fn emit_finish(&mut self) {
-        if let Some(emitter) = self.emitter.as_mut() {
-            emitter.finish();
-        }
-    }
-
     fn skip_to_sync(&mut self, retains: &[TokenKind]) -> Result<bool, DukaSpannedError> {
         loop {
             let tk = &self.peek_token(0)?.0;
@@ -815,20 +810,17 @@ impl Parser<Token> {
             if let Some(checkpoints) = checkpoints.as_deref_mut() {
                 checkpoints.push(self.checkpoint());
             }
-            self.emit_start(KIND_STMT);
 
             // a `return` ends here only if what follows can begin the next
             // statement; otherwise the value list ran into something that is
             // neither, and the block is reported on and resynced from
             if next_kind == TokenKind::Return {
                 let Ok(_) = self.next_token() else {
-                    self.emit_finish();
                     return Some(Block(stmts.into()));
                 };
                 match self.ret_stmt() {
                     Ok(ret) => match self.next_starts_statement(consumed, retains) {
                         Ok(true) => {
-                            self.emit_finish();
                             stmts.push(ret);
                             continue;
                         }
@@ -842,7 +834,6 @@ impl Parser<Token> {
                     },
                     Err(e) => note_error(errors, &mut error_indices, stmts.len(), e),
                 }
-                self.emit_finish();
                 if !self.recover_error(&mut stmts, retains) {
                     return Some(Block(stmts.into()));
                 }
@@ -850,15 +841,11 @@ impl Parser<Token> {
             }
 
             match self.stmt() {
-                Ok(Some(stmt)) => {
-                    self.emit_finish();
-                    stmts.push(stmt)
-                }
+                Ok(Some(stmt)) => stmts.push(stmt),
                 Ok(None) => {
                     // `stmt` declined without consuming anything, so the loop
                     // must not spin on the same token: report it and resync
                     let Ok((kind, _)) = self.peek_token(0) else {
-                        self.emit_finish();
                         return Some(Block(stmts.into()));
                     };
                     note_error(
@@ -875,14 +862,12 @@ impl Parser<Token> {
                             self.source_info.clone(),
                         ),
                     );
-                    self.emit_finish();
                     if !self.recover_error(&mut stmts, retains) {
                         return Some(Block(stmts.into()));
                     }
                 }
                 Err(e) => {
                     note_error(errors, &mut error_indices, stmts.len(), e);
-                    self.emit_finish();
                     if !self.recover_error(&mut stmts, retains) {
                         return Some(Block(stmts.into()));
                     }
@@ -4499,12 +4484,6 @@ impl Parser<Token> {
                 .inspect(|t| {
                     self.token_index += 1;
                     self.current_span = t.1;
-                    if let Some(emitter) = self.emitter.as_mut() {
-                        emitter.token(
-                            token_kind_code(&t.0),
-                            TextRange::new(t.1.start.at_char, t.1.end.at_char),
-                        );
-                    }
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
 
@@ -4526,12 +4505,6 @@ impl Parser<Token> {
                 .inspect(|t| {
                     self.token_index += 1;
                     self.current_span = t.1;
-                    if let Some(emitter) = self.emitter.as_mut() {
-                        emitter.token(
-                            token_kind_code(&t.0),
-                            TextRange::new(t.1.start.at_char, t.1.end.at_char),
-                        );
-                    }
                 })
                 .unwrap_or((TokenKind::EOF, self.current_span));
 
@@ -4627,6 +4600,7 @@ impl Parser<Token> {
     ) -> (DukaChunk, Vec<DukaSpannedError>, IncrementalParseCache) {
         let config_snapshot = config.clone();
         let source = String::from_utf8_lossy(&stream.source_info.source).into_owned();
+        let tree_events = tree_events_from_tokens(&stream.tokens, &source);
         let old_tree = previous.as_ref().and_then(|cache| cache.tree.clone());
         let start_index = previous
             .as_ref()
@@ -4700,15 +4674,6 @@ impl Parser<Token> {
             } else {
                 (Self::new(stream, config), false, true)
             };
-        let mut emitter = SyntaxEmitter::default();
-        if let (Some(tree), Some(at)) = (old_tree, edit_at_char) {
-            for (token, range) in tree.tokens() {
-                if range.end.get() <= at {
-                    emitter.token(token.kind, range);
-                }
-            }
-        }
-        parser.emitter = Some(emitter);
         let start_span = parser.current_span;
         if collect_head && let Err(e) = parser.chunk_doc_run() {
             error_indices.push(0);
@@ -4739,10 +4704,11 @@ impl Parser<Token> {
                 if resumed { Span::EMPTY } else { start_span },
             )
         };
-        let tree = parser
-            .emitter
-            .take()
-            .map(|emitter| emitter.into_tree(&source));
+        let mut session = duka_syntax::SyntaxSession::new();
+        if let Some(old) = old_tree {
+            session.set_tree(old);
+        }
+        let tree = session.reparse(&source, &tree_events);
         let chunk = DukaChunk {
             block,
             span,
@@ -4760,7 +4726,7 @@ impl Parser<Token> {
             config: config_snapshot,
             chunk_attrs: chunk.attrs.clone(),
             chunk_head_end: parser.chunk_head_end,
-            tree,
+            tree: Some(tree),
         };
         (chunk, errors, cache)
     }

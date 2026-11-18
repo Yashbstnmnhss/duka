@@ -51,6 +51,7 @@ pub struct DocAnalysis {
     pub modules: Option<ModuleResolver>,
     pub require_bindings: HashMap<String, PathBuf>,
     pub parse_cache: Option<IncrementalParseCache>,
+    pub syntax: Option<Arc<duka_syntax::SyntaxTree>>,
 }
 
 /// The way from the name written in a `require` to the module it reached. The
@@ -354,6 +355,7 @@ pub fn analyze_incremental(
                 modules: None,
                 require_bindings: HashMap::new(),
                 parse_cache: None,
+                syntax: None,
             };
         }
     };
@@ -391,6 +393,7 @@ pub fn analyze_incremental(
         &data.1.modules,
     ));
     let require_bindings = require_bindings_of(&chunk, &resolver, &data.1.modules);
+    let syntax = parse_cache.syntax_tree().cloned().map(Arc::new);
     DocAnalysis {
         tokens,
         errors,
@@ -399,5 +402,6 @@ pub fn analyze_incremental(
         modules: Some(resolver),
         require_bindings,
         parse_cache: Some(parse_cache),
+        syntax,
     }
 }

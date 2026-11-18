@@ -1986,76 +1986,89 @@ fn document_symbols(
 ) -> Vec<DocumentSymbol> {
     let mut out: Vec<DocumentSymbol> = vec![];
     let mut structs: Vec<(usize, usize)> = vec![];
-    let mut at_line_start = true;
-    let mut exported = false;
-    let mut last_line = 0u32;
-    let mut seen_any = false;
-    for (kind, span) in &analysis.tokens.tokens {
-        if !seen_any || span.start.line != last_line {
-            at_line_start = true;
-            exported = false;
-            last_line = span.start.line;
-            seen_any = true;
-        }
-        if kind.is_terminator() {
-            continue;
-        }
-        match kind {
-            TokenKind::Export => {
-                exported = true;
+    let stmt_ranges: Vec<(u32, u32)> = analysis
+        .syntax
+        .as_ref()
+        .map(|tree| {
+            tree.nodes_of(duka_syntax::KIND_STMT)
+                .into_iter()
+                .map(|range| (range.start.get(), range.end.get()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let tokens: Vec<_> = analysis
+        .tokens
+        .tokens
+        .iter()
+        .filter(|(kind, _)| !kind.is_terminator() && !kind.is_comment())
+        .collect();
+    for (start, end) in stmt_ranges {
+        let mut exported = false;
+        let mut declared = false;
+        for (kind, span) in tokens.iter().copied() {
+            let at = span.start.at_char;
+            if at < start {
+                continue;
             }
-            TokenKind::Local
-            | TokenKind::Global
-            | TokenKind::Type
-            | TokenKind::Function
-            | TokenKind::Fn
-            | TokenKind::Object => {}
-            _ if at_line_start && matches!(kind, TokenKind::Ident(_)) => {
-                at_line_start = false;
-                let symbol = analysis.scope.symbols.symbol_at_span(*span);
-                let symbol_kind = symbol.and_then(|s| match s.symbol_type {
-                    SymbolType::Function => Some(SymbolKind::FUNCTION),
-                    SymbolType::ObjectClass(_) => Some(SymbolKind::STRUCT),
-                    SymbolType::TypeAlias(_) => Some(SymbolKind::INTERFACE),
-                    SymbolType::TypeFunction(_) | SymbolType::InlineTypeFunction(_) => {
-                        Some(SymbolKind::FUNCTION)
-                    }
-                    SymbolType::Constant(_) if exported => Some(SymbolKind::CONSTANT),
-                    SymbolType::Variable if exported => Some(SymbolKind::VARIABLE),
-                    _ => None,
-                });
-                let object = symbol.and_then(|s| match s.symbol_type {
-                    SymbolType::ObjectClass(id) => Some(id),
-                    _ => None,
-                });
-                let nested = object.is_none()
-                    && analysis.scope.objects.iter().any(|class| {
-                        span.start.line >= class.decl_span.start.line
-                            && span.start.line <= class.decl_span.end.line
-                    });
-                if nested {
-                    continue;
-                }
-                if let Some(symbol_kind) = symbol_kind {
-                    let name = ident_name(kind).unwrap_or_default().to_string();
-                    let range = index.range(text, *span);
-                    out.push(DocumentSymbol {
-                        name,
-                        detail: symbol.and_then(|s| s.ty_display.as_deref().map(str::to_string)),
-                        kind: symbol_kind,
-                        tags: None,
-                        #[allow(deprecated)]
-                        deprecated: None,
-                        range,
-                        selection_range: range,
-                        children: None,
-                    });
-                    if let Some(id) = object {
-                        structs.push((out.len() - 1, id));
-                    }
-                }
+            if at > end {
+                break;
             }
-            _ => at_line_start = false,
+            match kind {
+                TokenKind::Export => exported = true,
+                TokenKind::Local
+                | TokenKind::Global
+                | TokenKind::Type
+                | TokenKind::Function
+                | TokenKind::Fn
+                | TokenKind::Object => {}
+                TokenKind::Ident(_) if !declared => {
+                    declared = true;
+                    let symbol = analysis.scope.symbols.symbol_at_span(*span);
+                    let symbol_kind = symbol.and_then(|s| match s.symbol_type {
+                        SymbolType::Function => Some(SymbolKind::FUNCTION),
+                        SymbolType::ObjectClass(_) => Some(SymbolKind::STRUCT),
+                        SymbolType::TypeAlias(_) => Some(SymbolKind::INTERFACE),
+                        SymbolType::TypeFunction(_) | SymbolType::InlineTypeFunction(_) => {
+                            Some(SymbolKind::FUNCTION)
+                        }
+                        SymbolType::Constant(_) if exported => Some(SymbolKind::CONSTANT),
+                        SymbolType::Variable if exported => Some(SymbolKind::VARIABLE),
+                        _ => None,
+                    });
+                    let object = symbol.and_then(|s| match s.symbol_type {
+                        SymbolType::ObjectClass(id) => Some(id),
+                        _ => None,
+                    });
+                    let nested = object.is_none()
+                        && analysis.scope.objects.iter().any(|class| {
+                            span.start.line >= class.decl_span.start.line
+                                && span.start.line <= class.decl_span.end.line
+                        });
+                    if nested {
+                        continue;
+                    }
+                    if let Some(symbol_kind) = symbol_kind {
+                        let name = ident_name(kind).unwrap_or_default().to_string();
+                        let range = index.range(text, *span);
+                        out.push(DocumentSymbol {
+                            name,
+                            detail: symbol
+                                .and_then(|s| s.ty_display.as_deref().map(str::to_string)),
+                            kind: symbol_kind,
+                            tags: None,
+                            #[allow(deprecated)]
+                            deprecated: None,
+                            range,
+                            selection_range: range,
+                            children: None,
+                        });
+                        if let Some(id) = object {
+                            structs.push((out.len() - 1, id));
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
     for (at, id) in structs {
@@ -3409,9 +3422,9 @@ async fn publish_round(
 
 /// The one task that publishes diagnostics. It waits for a kick, waits out the
 /// debounce, then publishes every file that was waiting plus the rest of the
-/// open ones: an edit invalidates every snapshot, and a file that requires the
-/// edited one carries its errors, so a module's mistake reaches the files that
-/// read it, not only itself.
+/// open ones: an edit invalidates the files that read the edited one, and those
+/// files carry its errors, so a module's mistake reaches the files that read
+/// it, not only itself.
 async fn publisher_loop(
     client: Client,
     workspace: Arc<SharedWorkspace>,
@@ -7776,6 +7789,17 @@ end
             sizes.windows(2).all(|pair| pair[0] <= pair[1]),
             "the chain must only grow: {sizes:?}"
         );
+    }
+
+    #[test]
+    fn two_declarations_on_one_line_are_both_listed() {
+        let text = "export local a = 1; export local b = 2\n";
+        let analysis = analyze(text);
+        let index = convert::LineIndex::new(text);
+        let symbols = document_symbols(&analysis, text, &index);
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"a"), "expected `a` in {names:?}");
+        assert!(names.contains(&"b"), "expected `b` in {names:?}");
     }
 
     #[test]

@@ -525,7 +525,6 @@ dependencies = [
  "duka-backend",
  "duka-frontend",
  "duka-gc",
- "duka-lib",
  "duka-macros",
  "duka-shared",
  "serde",
@@ -539,6 +538,7 @@ version = "0.1.0"
 dependencies = [
  "duka-lib",
  "duka-printer",
+ "duka-syntax",
  "serde",
  "serde_json",
  "tokio",

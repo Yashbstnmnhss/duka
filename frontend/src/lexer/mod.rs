@@ -6,6 +6,7 @@ use std::{
 };
 
 pub mod macros;
+pub mod span_mut;
 pub mod token;
 
 use duka_shared::builtin::Builtins;

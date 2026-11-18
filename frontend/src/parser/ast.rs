@@ -3,7 +3,7 @@ use std::{
     ops::{Add, BitAnd, BitOr, Div, Mul, Sub},
 };
 
-use duka_macros::{Info, Visitor, VisitorMut, binops};
+use duka_macros::{Info, SpanMut, Visitor, VisitorMut, binops};
 use serde::{Deserialize, Serialize};
 
 use crate::analyzer::{Visit, VisitMut, Visitor, VisitorMut};
@@ -17,7 +17,7 @@ use duka_shared::{
     value::{AttrConstValue, AttrValue, ConstValue},
 };
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, SpanMut)]
 pub enum ExprOrStmt {
     Expr(Node),
     Stmt(Node),
@@ -39,7 +39,9 @@ impl ExprOrStmt {
     }
 }
 
-#[derive(Debug, PartialEq, Default, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Default, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize,
+)]
 #[ast(node)]
 pub struct Node(pub NodeKind, #[nonvisiting] pub Span);
 impl Mul<NodeKind> for Span {
@@ -53,7 +55,9 @@ impl Mul<NodeKind> for Span {
 pub type Expr = Node;
 pub type Stmt = Node;
 
-#[derive(Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Default, Info, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize,
+)]
 pub enum NodeKind {
     #[default]
     #[tag(empty)]
@@ -291,7 +295,9 @@ impl NodeKind {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize, Default,
+)]
 pub struct FuncBody(
     #[nonvisiting] pub Box<[Param]>,
     #[nonvisiting] pub Box<[TypeParam]>,
@@ -324,7 +330,7 @@ impl FuncBody {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub struct ReturnAnnotation {
     pub tys: Box<[TypeDesc]>,
     pub var_arg: bool,
@@ -334,7 +340,9 @@ pub struct ReturnAnnotation {
     pub ensure: Option<(Box<Expr>, Span)>,
 }
 
-#[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Clone, Default, Visitor, VisitorMut, SpanMut, Serialize, Deserialize,
+)]
 pub struct If(
     pub IfClause,
     #[block(if_clauses)] pub Box<[IfClause]>,
@@ -342,7 +350,9 @@ pub struct If(
     #[block_mut]
     pub Option<Box<Block>>,
 );
-#[derive(Debug, PartialEq, Clone, Default, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Clone, Default, Visitor, VisitorMut, SpanMut, Serialize, Deserialize,
+)]
 pub struct IfClause(
     #[block(if_clause)]
     #[block_mut]
@@ -350,7 +360,7 @@ pub struct IfClause(
     pub Box<Expr>,
 );
 
-#[derive(Debug, PartialEq, Default, Clone, Visitor, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Clone, Visitor, SpanMut, Serialize, Deserialize)]
 pub struct Block(pub Box<[Stmt]>);
 impl VisitMut for Block {
     fn visit_mut<V: VisitorMut>(&mut self, visitor: &mut V) {
@@ -385,7 +395,7 @@ fn node_exits(node: &NodeKind) -> bool {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub struct Match(
     pub Box<Expr>,
     pub Box<[MatchClause]>,
@@ -393,7 +403,7 @@ pub struct Match(
     #[block_mut]
     pub Option<Box<Block>>,
 );
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub struct MatchClause(
     pub Pattern,
     #[block(match_clause)]
@@ -401,7 +411,7 @@ pub struct MatchClause(
     pub Box<Block>,
 );
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum Destructuring {
     #[nonvisiting]
     Name(Name),
@@ -437,7 +447,7 @@ impl Display for Destructuring {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub struct DestructingTableTerm(#[nonvisiting] pub Name, pub DestructingTerm);
 
 impl Display for DestructingTableTerm {
@@ -446,7 +456,7 @@ impl Display for DestructingTableTerm {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum DestructingTerm {
     Bind(#[nonvisiting] Name),
     /// `_` -- read and thrown away. Its own variant rather than a name, because a
@@ -471,7 +481,7 @@ impl Display for DestructingTerm {
 
 /// guard mode
 pub type Pattern = (PatternTerm, Option<Box<Expr>>);
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum PatternTerm {
     /// `123`
     Constant(Box<Expr>),
@@ -494,7 +504,7 @@ pub enum PatternTerm {
     Type(#[nonvisiting] Name, Box<[PatternTerm]>),
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum PatternFieldTerm<T = PatternTerm>
 where
     T: Visit + VisitMut,
@@ -504,7 +514,7 @@ where
     Expr(Expr, PatternTerm),
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum PatternArrayTerm<T = PatternTerm>
 where
     T: Visit + VisitMut,
@@ -517,14 +527,14 @@ where
     Term(T),
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub enum PatternOp {
     And,
     Or,
     Xor,
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub struct ObjectDef {
     #[nonvisiting]
     pub global: bool,
@@ -540,7 +550,7 @@ pub struct ObjectDef {
     pub static_methods: Box<[(Name, Attrs, FuncBody)]>,
     pub methods: Box<[(Name, Attrs, FuncBody)]>,
 }
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum ObjectProperty {
     NameValue(
         #[nonvisiting] Name,
@@ -554,12 +564,12 @@ pub enum ObjectProperty {
     ),
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 /// (clauses)
 /// select (expr)
 pub struct Linq(pub Box<[LinqClause]>, pub Box<Expr>);
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum LinqClause {
     /// where (expr) -> if ...
     Where(Box<Expr>),
@@ -589,24 +599,24 @@ compile_time_binary!(Divide use Div impl div);
 compile_time_binary!(And use BitAnd impl bitand);
 compile_time_binary!(Or use BitOr impl bitor);
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut, SpanMut)]
 pub struct BangDoNode {
     pub context: Box<Expr>,
     pub body: Box<Block>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SpanMut)]
 pub enum BangCollectedSource {
     Tokens(Vec<Token>, Span),
     Raw(String),
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SpanMut)]
 pub struct BangCollected {
     pub name: String,
     pub source: BangCollectedSource,
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum Field {
     Value(Expr),
     KeyValue(Expr, Expr, #[nonvisiting] Option<TypeDesc>),
@@ -679,7 +689,7 @@ pub fn doc_text(attrs: &Attrs) -> Option<Box<str>> {
     String::from_utf8(text).ok().map(Box::from)
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub struct TypeParam(
     pub Name,
     /// `T: bound`
@@ -693,7 +703,7 @@ pub struct TypeParam(
 );
 
 /// This type parameter can be a fixed one, var_arg (many)
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Serialize, Deserialize, SpanMut)]
 pub enum ParamMode {
     /// One type, `T`.
     #[default]
@@ -702,7 +712,7 @@ pub enum ParamMode {
     Pack,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub enum Param {
     /// `...`, optionally with a collect target: `...: Ts` offers the trailing
     /// arguments to the pack variable `Ts`, a `<...Ts>` the signature declares
@@ -715,7 +725,7 @@ pub enum Param {
     Typed(Name, TypeDesc),
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub enum TypeFnParam {
     Name(Name),
     Kinded(Name, Kind<NoExt>),
@@ -763,7 +773,7 @@ impl std::fmt::Display for TypeFnParam {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum PathSuffix {
     /// `path?`
     NilCheck(#[nonvisiting] Span),
@@ -799,7 +809,7 @@ impl Display for PathSuffix {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 /// これはチェインです
 pub enum Path {
     /// `(expr)`
@@ -877,7 +887,7 @@ impl Add<PathSuffix> for Path {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, SpanMut)]
 pub enum TypeOp {
     Union,
     Intersect,
@@ -960,7 +970,7 @@ binops! {
 }
 
 /// `where` 语句
-#[derive(Debug, Clone, PartialEq, Visitor, VisitorMut, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Visitor, VisitorMut, SpanMut, Serialize, Deserialize)]
 pub enum WhereClause {
     /// `U: Point` -- `U` has to be a subtype of `Point`.
     ///
@@ -1075,7 +1085,7 @@ pub fn path_of(base: &TypeDesc, span: Span) -> Path {
 /// alongside the field type, which is both meaningless -- a key is a name, not a
 /// node -- and unworkable, since neither implements `Visit`. The field type is the
 /// part a walk has to reach, so it is the only part that is marked for visiting.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Visitor, VisitorMut, SpanMut)]
 pub struct TypeField {
     #[nonvisiting]
     pub key: Box<str>,
@@ -1092,7 +1102,7 @@ impl TypeField {
 
 /// The derived visitor walks a type the way it walks anything else, which is what
 /// makes `F(a)` and `F<b>` reachable by the same code.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SpanMut)]
 pub enum TypeDesc {
     Pure(Type),
     Named(Box<str>, Span),
@@ -1215,7 +1225,7 @@ impl TypeDesc {
 /// The written signature of a function type: what `Type::Function` is at the
 /// annotation stage, its members still `TypeDesc`s, because a member may name,
 /// call or compute what it stands for.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SpanMut)]
 pub struct FunctionSig {
     pub params: Box<[TypeDesc]>,
     pub var_arg: bool,
@@ -1532,7 +1542,7 @@ impl Display for TypeDesc {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SpanMut)]
 pub struct DukaChunk {
     pub block: Block,
     pub attrs: Attrs,

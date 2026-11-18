@@ -170,6 +170,14 @@ impl GreenBuilder {
         *self.current_len_mut() = self.current_len() + len;
     }
 
+    pub fn reuse_node(&mut self, node: Arc<GreenNode>) {
+        let len = node.len;
+        let offset = self.current_len();
+        self.current_children_mut()
+            .push(GreenChild::Node { node, offset });
+        *self.current_len_mut() = self.current_len() + len;
+    }
+
     fn current_children_mut(&mut self) -> &mut Vec<GreenChild> {
         match self.stack.last_mut() {
             Some(frame) => &mut frame.children,
@@ -221,6 +229,61 @@ impl SyntaxTree {
         let mut out = vec![];
         collect_tokens(&self.root, TextSize::ZERO, &mut out);
         out
+    }
+
+    pub fn nodes_of(&self, kind: Kind) -> Vec<TextRange> {
+        let mut out = vec![];
+        collect_nodes(&self.root, TextSize::ZERO, kind, &mut out);
+        out
+    }
+
+    pub fn top_statements(&self) -> Vec<Arc<GreenNode>> {
+        self.root
+            .children()
+            .iter()
+            .filter_map(|child| {
+                child
+                    .as_node()
+                    .filter(|node| node.kind == KIND_STMT)
+                    .cloned()
+            })
+            .collect()
+    }
+}
+
+impl GreenNode {
+    pub fn leaf_tokens(&self) -> Vec<Arc<GreenToken>> {
+        let mut out = vec![];
+        collect_leaf_tokens(self, &mut out);
+        out
+    }
+}
+
+fn collect_leaf_tokens(node: &GreenNode, out: &mut Vec<Arc<GreenToken>>) {
+    for child in &node.children {
+        match child {
+            GreenChild::Token { token, .. } => {
+                if token.kind != KIND_TRIVIA {
+                    out.push(Arc::clone(token));
+                }
+            }
+            GreenChild::Node { node, .. } => collect_leaf_tokens(node, out),
+        }
+    }
+}
+
+fn collect_nodes(node: &GreenNode, start: TextSize, kind: Kind, out: &mut Vec<TextRange>) {
+    for child in &node.children {
+        match child {
+            GreenChild::Node { node, offset } => {
+                let from = start + *offset;
+                if node.kind == kind {
+                    out.push(TextRange::new(from.get(), (from + node.len).get()));
+                }
+                collect_nodes(node, from, kind, out);
+            }
+            GreenChild::Token { .. } => {}
+        }
     }
 }
 

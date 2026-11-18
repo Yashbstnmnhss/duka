@@ -36,7 +36,10 @@ pub const VERSION: SemVer = 史書云! {
 #[cfg(test)]
 mod tests {
 
-    use crate::{analyzer::visitors::*, analyzer::*, lexer::token::*, lexer::*, parser::*};
+    use crate::{
+        analyzer::visitors::*, analyzer::*, lexer::span_mut::*, lexer::token::*, lexer::*,
+        parser::*,
+    };
     use duka_shared::{errors::*, types::*};
     use std::io::Cursor;
 
@@ -65,6 +68,35 @@ mod tests {
                 .tokenize()
                 .unwrap()
         };
+    }
+
+    #[test]
+    fn span_mut_reaches_every_span() {
+        let src = "local function f(a: int)\nlocal x = a\nreturn x\nend\nreturn f\n";
+        let (mut chunk, _) = Parser::parse_lenient(from_string!(src), Default::default());
+        let mut count = 0usize;
+        chunk.span_mut(&mut |span| {
+            assert_ne!(span, &Span::EMPTY);
+            count += 1;
+        });
+        assert!(count > 10, "expected many spans, got {count}");
+
+        remap(&mut chunk, |span| Span {
+            start: Position {
+                at_char: span.start.at_char + 7,
+                ..span.start
+            },
+            end: Position {
+                at_char: span.end.at_char + 7,
+                ..span.end
+            },
+        });
+        let mut after = 0usize;
+        chunk.span_mut(&mut |span| {
+            assert!(span.start.at_char >= 7, "span not remapped: {span:?}");
+            after += 1;
+        });
+        assert_eq!(after, count);
     }
 
     #[test]
@@ -321,6 +353,35 @@ break
         );
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(cache.syntax_tree().unwrap().text(), new);
+    }
+
+    #[test]
+    fn repeated_edits_keep_the_syntax_tree_lossless() {
+        let mut current = "local a = 1\nlocal b = 2\nlocal c = 3\nreturn a + b + c\n".to_owned();
+        let (_, _, mut cache) = Parser::parse_lenient_incremental(
+            from_string!(&current),
+            Default::default(),
+            None,
+            None,
+        );
+        for (from, to) in [("= 1", "= 100"), ("= 2", "= 2000"), ("a + b", "a + b + a")] {
+            let byte = current.find(from).unwrap();
+            let at = current[..byte].chars().count() as u32;
+            let next = current.replacen(from, to, 1);
+            let (_, _, next_cache) = Parser::parse_lenient_incremental(
+                from_string!(&next),
+                Default::default(),
+                Some(cache),
+                Some(at),
+            );
+            assert_eq!(
+                next_cache.syntax_tree().unwrap().text(),
+                next,
+                "tree diverged from source after replacing {from}"
+            );
+            current = next;
+            cache = next_cache;
+        }
     }
 
     #[test]
