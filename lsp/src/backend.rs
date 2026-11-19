@@ -7583,7 +7583,7 @@ end
         // line that declares it reads better than not moving at all.
         let (uri, line) = crate::declared::locate("os.exit").expect("os.exit is somewhere");
         let file = crate::declared::generated()
-            .into_iter()
+            .iter()
             .find(|f| f.name == "os.duka")
             .expect("os.duka");
         assert!(

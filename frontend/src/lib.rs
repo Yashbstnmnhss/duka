@@ -83,7 +83,7 @@ mod tests {
             TokenKind::LParen,
             TokenKind::RParen,
         ];
-        let codes: Vec<_> = kinds.iter().map(|kind| token_kind_code(kind)).collect();
+        let codes: Vec<_> = kinds.iter().map(token_kind_code).collect();
         for (i, code) in codes.iter().enumerate() {
             for other in codes.iter().skip(i + 1) {
                 assert_ne!(code, other, "two token kinds got the same syntax code");
