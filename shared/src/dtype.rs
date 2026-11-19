@@ -488,7 +488,7 @@ impl<N: PartialOrd + Copy + Display> Display for NumSet<N> {
             Some(n) => n.to_string(),
             None => "+∞".to_owned(),
         };
-        let has_single = |n: Option<N>| n.is_some_and(|n| self.singles.iter().any(|&s| s == n));
+        let has_single = |n: Option<N>| n.is_some_and(|n| self.singles.contains(&n));
         let mut parts = Vec::with_capacity(self.ranges.len() + 1);
         let mut used = vec![false; self.singles.len()];
 
@@ -502,19 +502,17 @@ impl<N: PartialOrd + Copy + Display> Display for NumSet<N> {
                 (false, false) => format!("({}, {})", low(a), high(b)),
             };
             parts.push(s);
-            if let Some(a) = a {
-                if left {
-                    if let Some(i) = self.singles.iter().position(|&x| x == a) {
-                        used[i] = true;
-                    }
-                }
+            if let Some(a) = a
+                && left
+                && let Some(i) = self.singles.iter().position(|&x| x == a)
+            {
+                used[i] = true;
             }
-            if let Some(b) = b {
-                if right {
-                    if let Some(i) = self.singles.iter().position(|&x| x == b) {
-                        used[i] = true;
-                    }
-                }
+            if let Some(b) = b
+                && right
+                && let Some(i) = self.singles.iter().position(|&x| x == b)
+            {
+                used[i] = true;
             }
         }
 
@@ -619,7 +617,7 @@ impl<N: PartialOrd + Copy> NumSet<N> {
             return;
         }
         self.singles
-            .retain(|n| !(a.map_or(true, |a| a < *n) && b.map_or(true, |b| *n < b)));
+            .retain(|n| !(a.is_none_or(|a| a < *n) && b.is_none_or(|b| *n < b)));
         let mut out = Vec::with_capacity(self.ranges.len());
         for (s, e) in self.ranges.drain(..) {
             let left = e.zip(a).is_some_and(|(e, a)| e <= a);
@@ -691,7 +689,7 @@ impl<N: PartialOrd + Copy> NumSet<N> {
             ranges: self
                 .ranges
                 .iter()
-                .map(|(a, b)| (a.map(|n| f(n)), b.map(|n| f(n))))
+                .map(|(a, b)| (a.map(&f), b.map(&f)))
                 .collect(),
             singles: self.singles.iter().map(|n| f(*n)).collect(),
         };
@@ -753,7 +751,7 @@ impl<N: PartialOrd + Copy> NumSet<N> {
             if inside {
                 continue;
             }
-            if !seen.iter().any(|&x| x == n) {
+            if !seen.contains(&n) {
                 seen.push(n);
             }
         }
@@ -1905,14 +1903,12 @@ impl Type {
                 Type::Literal(cv) => pat.check(cv),
                 _ => pat.base.accepts(actual.base()),
             },
-            Type::Brand(b) => {
-                return match actual {
-                    Type::Any => true,
-                    Type::Never => false,
-                    Type::Brand(a) => b.label == a.label && b.base.accepts(&a.base),
-                    _ => false,
-                };
-            }
+            Type::Brand(b) => match actual {
+                Type::Any => true,
+                Type::Never => false,
+                Type::Brand(a) => b.label == a.label && b.base.accepts(&a.base),
+                _ => false,
+            },
             a if matches!(actual, Type::Brand(_) | Type::Pattern(_)) => a.accepts(actual.base()),
             a if matches!(actual, Type::Unknown) => matches!(a, Type::Any),
             Type::Unknown => true,

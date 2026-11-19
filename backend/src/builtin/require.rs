@@ -198,7 +198,7 @@ pub fn impl_require(
             if let Some(cache) = api.module_cache() {
                 cache
                     .borrow_mut()
-                    .set(RuntimeValue::from_string(h, cache_key.clone()), val.clone());
+                    .set(RuntimeValue::from_string(h, cache_key.clone()), val);
             }
             (cache_key, val)
         }

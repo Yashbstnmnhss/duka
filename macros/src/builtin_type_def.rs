@@ -461,7 +461,8 @@ impl BuiltinTypeDef {
                     None => quote! {},
                 }
             });
-            let body = if e.env {
+
+            if e.env {
                 quote! {
                     b = b.register(
                         #name_lit,
@@ -501,8 +502,7 @@ impl BuiltinTypeDef {
                         )),
                     );
                 }
-            };
-            body
+            }
         });
 
         let const_registers = consts.iter().map(|e| {

@@ -302,14 +302,13 @@ pub fn collect_sources(
                     continue;
                 }
 
-                if only_src {
-                    if path == tests_dir
+                if only_src
+                    && (path == tests_dir
                         || path.starts_with(&tests_dir)
                         || path == modules_dir
-                        || path.starts_with(&modules_dir)
-                    {
-                        continue;
-                    }
+                        || path.starts_with(&modules_dir))
+                {
+                    continue;
                 }
 
                 stack.push(path);

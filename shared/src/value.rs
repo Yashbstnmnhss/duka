@@ -43,7 +43,7 @@ impl PartialEq<DukaInt> for DukaFloatWrapper {
 }
 impl PartialOrd<DukaInt> for DukaFloatWrapper {
     fn partial_cmp(&self, other: &DukaInt) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(&(*other as DukaFloat).into())
+        self.0.partial_cmp(&(*other as DukaFloat))
     }
 }
 

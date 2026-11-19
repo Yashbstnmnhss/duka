@@ -136,7 +136,7 @@ impl CPluginLoader {
             for export in module.exports {
                 let closure = make_closure(export.func);
                 let value = RuntimeValue::from_rust_closure(heap, closure);
-                table.set_by_key(heap, export.name.into(), value);
+                table.set_by_key(heap, export.name, value);
             }
             let value = RuntimeValue::Table(heap.alloc(duka_gc::GcCell::new(table)));
             if let Some(library) = library {
@@ -147,6 +147,12 @@ impl CPluginLoader {
             }
             Ok(LoadedModule::Value(value))
         }
+    }
+}
+
+impl Default for CPluginLoader {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
