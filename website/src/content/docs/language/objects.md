@@ -38,12 +38,25 @@ a:method()
 ## Grammar
 
 ```duka
-object <name> (extends <base>)? (where ...)? (extends ... where ... end)?
-    <property> (= <expr>)?
+object <name> <generics>? (<properties>)? (extends <base> (<args>)?)?
+    <property> (: <type>)? (= <expr>)?
 
     function :<method>(...) ... end
     function <static_function>(...) ... end
     function __<metamethod>(...) ... end
+end
+```
+
+The header can declare properties directly, with optional types and defaults.
+This quick form is the same as listing them in the body:
+
+```duka
+object Point(x: int, y: int = 0)
+end
+-- same as:
+object Point
+    x: int
+    y: int = 0
 end
 ```
 
@@ -55,7 +68,23 @@ object ABCC<T> extends A where T: int end
 
 ## Extends
 
-`extends` declares the parent object.
+`extends` declares the parent object. An optional argument list passes arguments
+to the parent's `init`; the generated `init` calls `B.init(self, <args>)` before
+setting the object's own properties. Args may refer to the object's own header
+properties:
+
+```duka
+@data object A
+    x: int = 0
+end
+@data object B(y: int) extends A(y + 1)
+    z: int = 0
+end
+B.new(3, 7)  -- x = 4 (from A), z = 7
+```
+
+If the class defines its own `init`, it is used instead and the base call is not
+generated — write `super:init(...)` yourself in that case.
 
 Notice: `extends` only reaches a class the **same file** declares. A module
 cannot extend a class it imported, and an instance of one module's `Point` is
@@ -84,12 +113,12 @@ local bad: string = p.x                         -- an error
 ## `@data`
 
 ```duka
-@Data(frozen = true)
-object Point
-    x: int
-    y: int
+@data(frozen = true)
+object Point(x: int, y: int = 0)
 end
 ```
 
-generates `init`, `__eq` and `__tostring` from the properties. See
+generates `init`, `__eq` and `__tostring` from the properties. The generated
+`init` takes the named properties as parameters, keeps their type annotations
+and defaults, so `Point.new(3)` uses `y = 0`. See
 [Attributes](/language/attributes/).

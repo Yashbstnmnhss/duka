@@ -1,0 +1,17 @@
+[package]
+name = "duka-capi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "duka"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+duka-lib = { path = "../lib" }
+duka-shared = { path = "../shared" }
+duka-gc = { path = "../gc" }
+libloading = "0.9"
+
+[dev-dependencies]
+duka-capi-plugin-fixture = { path = "tests/plugin_fixture" }

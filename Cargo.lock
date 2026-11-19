@@ -459,6 +459,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "duka-capi"
+version = "0.1.0"
+dependencies = [
+ "duka-capi-plugin-fixture",
+ "duka-gc",
+ "duka-lib",
+ "duka-shared",
+ "libloading",
+]
+
+[[package]]
+name = "duka-capi-plugin-fixture"
+version = "0.1.0"
+dependencies = [
+ "duka-capi",
+]
+
+[[package]]
 name = "duka-cli"
 version = "0.1.0"
 dependencies = [

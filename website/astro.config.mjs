@@ -105,6 +105,12 @@ export default defineConfig({
                         { label: 'User data in rust', slug: 'rust/userdata-in-rust' },
                     ],
                 },
+                {
+                    label: 'C API',
+                    items: [
+                        { label: 'C plugins', slug: 'c/plugins', badge: 'native' },
+                    ],
+                },
             ],
         }),
     ],

@@ -15,9 +15,17 @@ use std::{
 };
 
 /// How many sites inspect a `Type` without asking `base()` first.
-const BASELINE: usize = 97;
+const BASELINE: usize = 98;
 
-const SKIP: &[&str] = &["target", "ffi", "shared", "website", "node_modules", ".git"];
+const SKIP: &[&str] = &[
+    "target",
+    "ffi",
+    "capi",
+    "shared",
+    "website",
+    "node_modules",
+    ".git",
+];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -30,9 +38,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
             if SKIP.contains(&name.as_str()) {
                 continue;
             }
-            // this test lives here, and its own text is full of the pattern
-            if name == "tests" && path.parent().map(|p| p.to_string_lossy() == *"lib") == Some(true)
-            {
+            if name == "tests" {
                 continue;
             }
             rust_files(&path, out);

@@ -168,7 +168,7 @@ fn compile_requiring(main: &str, module: &str) -> Result<DukaProto, String> {
 fn run_requiring(main: &str, module: &str) -> Result<RuntimeValue, String> {
     let module = module.to_owned();
     let vm_state = default_vm_globals();
-    require::set_loader(&vm_state, move |name, _| {
+    require::set_loader(&vm_state, move |name, _, _| {
         if name != "host" {
             return Err(format!("module '{name}' not registered"));
         }

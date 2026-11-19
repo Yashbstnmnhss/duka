@@ -2491,7 +2491,7 @@ fn for_var_types(ty: &Type, count: usize) -> Option<Vec<Type>> {
         Type::Rec(inner) => for_var_types(inner, count),
         Type::Function(Some(ft)) => {
             let mut vars: Vec<Type> = ft.returns.iter().skip(1).cloned().collect();
-            vars.resize(count, Type::Nil);
+            vars.resize(count, Type::Any);
             Some(vars)
         }
         _ => None,
@@ -4296,7 +4296,12 @@ impl TypeCheckerCtx<'_> {
         {
             return answer;
         }
-        let base = match (left.base(), right.base()) {
+        let numeric_base = |ty: &Type| match ty.base() {
+            Type::Literal(ConstValue::Int(_)) => Type::Int,
+            Type::Literal(ConstValue::Float(_)) => Type::Float,
+            other => other.clone(),
+        };
+        let base = match (numeric_base(left), numeric_base(right)) {
             (Type::Float, Type::Float) => Type::Float,
             (Type::Int, Type::Int) => Type::Int,
             (Type::Float, Type::Int) | (Type::Int, Type::Float) => Type::Float,
@@ -7766,6 +7771,46 @@ mod tests {
     /// A generic `for` over an array or table names its variables from what it
     /// iterates: an array yields its elements, a table its value, or its key
     /// and value when two names are written.
+    #[test]
+    fn generic_for_var_from_iterator_function() {
+        let errors = check(
+            r#"
+local i = 0
+local gen = function()
+    i = i + 1
+    if i > 4 then return false end
+    return true, i
+end
+for k in gen do
+    local n: int = k
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
+    #[test]
+    fn generic_for_var_with_continue_break() {
+        let errors = check(
+            r#"
+local i = 0
+local gen = function()
+    i = i + 1
+    if i > 4 then return false end
+    return true, i
+end
+for k in gen do
+    if k == 2 then continue end
+    if k == 4 then break end
+    local n: int = k
+end
+return 0
+"#,
+        );
+        assert!(!is_error(&errors), "{errors:?}");
+    }
+
     #[test]
     fn generic_for_names_its_variables_from_what_it_iterates() {
         let errors = check(

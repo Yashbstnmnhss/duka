@@ -32,7 +32,10 @@ fn s(src: &str) -> Result<String, DukaError> {
 
 fn install<L>(l: L) -> VmGlobalsHandle
 where
-    L: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
+    L: Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
+        + Send
+        + Sync
+        + 'static,
 {
     let vm = default_vm_globals();
     require::set_loader(&vm, l);
@@ -54,8 +57,11 @@ fn run_in(vm: &VmGlobalsHandle, src: &str) -> Result<Box<[RuntimeValue]>, DukaEr
 
 fn loader(
     modules: HashMap<String, String>,
-) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
-    move |name, _caller_dir| {
+) -> impl Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
++ Send
++ Sync
++ 'static {
+    move |name, _caller_dir, _heap| {
         let src = modules
             .get(name)
             .ok_or_else(|| format!("no module '{name}'"))?;
@@ -93,7 +99,7 @@ static LOADS: AtomicUsize = AtomicUsize::new(0);
 fn cached() {
     let _guard = serial();
     LOADS.store(0, Ordering::SeqCst);
-    let vm = install(move |_, _| {
+    let vm = install(move |_, _, _| {
         LOADS.fetch_add(1, Ordering::SeqCst);
         let proto = gen_source(
             "return 7",
@@ -130,7 +136,7 @@ fn precompiled_dukac_loader() {
     )
     .unwrap();
     let bytes = proto_to_bytes(&proto).unwrap();
-    let vm = install(move |name, _caller_dir| {
+    let vm = install(move |name, _caller_dir, _heap| {
         if name != "greet" {
             return Err(format!("module '{name}' not registered"));
         }
@@ -169,7 +175,7 @@ static FAIL: AtomicBool = AtomicBool::new(true);
 fn loader_error_recovered() {
     let _guard = serial();
     FAIL.store(true, Ordering::SeqCst);
-    let vm = install(move |_, _| {
+    let vm = install(move |_, _, _| {
         if FAIL.load(Ordering::SeqCst) {
             return Err("boom".to_string());
         }

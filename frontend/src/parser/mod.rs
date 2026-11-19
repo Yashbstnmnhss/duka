@@ -1415,10 +1415,14 @@ impl Parser<Token> {
         })
         .collect::<Vec<_>>();
 
-        let base = opt![
+        let (base, base_args) = opt![
             self then Extends:
-            { Some(self.must_ident()?) }
-            else: None
+            {
+                let name = self.must_ident()?;
+                let args = self.args()?.map(|args| args.into_boxed_slice());
+                (Some(name), args)
+            }
+            else: (None, None)
         ];
 
         let mut static_methods = vec![];
@@ -1497,6 +1501,7 @@ impl Parser<Token> {
             name,
             attrs,
             base,
+            base_args,
             type_params: generics.into(),
             properties: properties.into(),
             static_methods: static_methods.into(),

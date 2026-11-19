@@ -1670,6 +1670,7 @@ impl DesugarTransformer {
             name,
             attrs,
             base,
+            base_args,
             properties,
             static_methods,
             methods,
@@ -1741,18 +1742,21 @@ impl DesugarTransformer {
             ),
         ];
 
-        if let Some((base_name, base_span)) = base {
+        if let Some((base_name, base_span)) = &base {
             let callee = access!(boxed!(Path::Base(name!("set_metatable", span))), span);
             let meta = Node(
                 NodeKind::Table(
                     [Field::NameValue(
-                        name!(MetaMethod::Index.name(), base_span),
-                        access!(boxed!(Path::Base((base_name, base_span))), base_span),
+                        name!(MetaMethod::Index.name(), *base_span),
+                        access!(
+                            boxed!(Path::Base((base_name.clone(), *base_span))),
+                            *base_span
+                        ),
                         None,
                     )]
                     .into(),
                 ),
-                base_span,
+                *base_span,
             );
             let args = [
                 access!(boxed!(Path::Base(obj_name.0.0.clone())), span),
@@ -1763,23 +1767,39 @@ impl DesugarTransformer {
         }
 
         // 收集属性, NameValue 有名字可作为 data 的 init 参数, KeyValue 保留 key 表达式
-        let props: Vec<(Option<Name>, Option<Box<Expr>>, Expr)> = properties
+        let props: Vec<(
+            Option<Name>,
+            Option<Box<Expr>>,
+            Expr,
+            Option<TypeDesc>,
+            bool,
+        )> = properties
             .into_iter()
             .map(|prop| match prop {
-                ObjectProperty::NameValue((pname, pspan), val, _) => (
-                    Some((pname, pspan)),
-                    None,
-                    val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan)),
-                ),
-                ObjectProperty::KeyValue(key, val, _) => (
-                    None,
-                    Some(key),
-                    val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span)),
-                ),
+                ObjectProperty::NameValue((pname, pspan), val, ty) => {
+                    let has_default = val.is_some();
+                    (
+                        Some((pname, pspan)),
+                        None,
+                        val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, pspan)),
+                        ty,
+                        has_default,
+                    )
+                }
+                ObjectProperty::KeyValue(key, val, ty) => {
+                    let has_default = val.is_some();
+                    (
+                        None,
+                        Some(key),
+                        val.map(|e| *e).unwrap_or(literal!(ConstValue::Nil, span)),
+                        ty,
+                        has_default,
+                    )
+                }
             })
             .collect();
 
-        for (name, key, val) in &props {
+        for (name, key, val, _, _) in &props {
             let path = match (name, key) {
                 (Some((n, ns)), _) => {
                     Path::Base(obj_name.0.0.clone()) + PathSuffix::Dot((n.clone(), *ns))
@@ -1806,28 +1826,56 @@ impl DesugarTransformer {
             .any(|(func_name, _, _)| func_name.0 == MetaMethod::ToString.name());
 
         // 无:init 时生成兜底构造器; data object 则以属性名为参数逐个赋值
-        if !has_init && (is_data_object || !has_base) {
-            let (params, body_stmts): (Vec<Param>, Vec<Stmt>) = if is_data_object {
+        if !has_init && (is_data_object || !has_base || base_args.is_some()) {
+            let mut base_init: Option<Stmt> = None;
+            if let (Some((base_name, base_span)), Some(args)) = (&base, &base_args) {
+                let callee = boxed!(access!(
+                    boxed!(
+                        Path::Base((base_name.clone(), *base_span))
+                            + PathSuffix::Dot(name!(csugar::INIT_FUNC, *base_span))
+                    ),
+                    *base_span
+                ));
+                let mut call_args =
+                    vec![access!(boxed!(Path::Base(name!(cgen::SELF, span))), span)];
+                call_args.extend(args.iter().cloned());
+                base_init = Some(Node(
+                    NodeKind::Call(callee, call_args.into_boxed_slice()),
+                    *base_span,
+                ));
+            }
+            let (params, mut body_stmts): (Vec<Param>, Vec<Stmt>) = if is_data_object {
                 let params = props
                     .iter()
-                    .filter_map(|(name, _, _)| {
-                        name.clone().map(|name| Param::Named(name, None, None))
+                    .filter_map(|(name, _, _, ty, _)| {
+                        name.clone()
+                            .map(|name| Param::Named(name, ty.clone(), None))
                     })
                     .collect();
-                let stmts = props
-                    .iter()
-                    .filter_map(|(name, _, _)| {
-                        let (n, ns) = name.clone()?;
-                        let target =
-                            Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), ns));
-                        let value = access!(boxed!(Path::Base((n, ns))), span);
-                        Some(assign!({ target } = { value }, span))
-                    })
-                    .collect();
+                let mut stmts = vec![];
+                for (name, _, value, _, has_default) in &props {
+                    let Some((n, ns)) = name.clone() else {
+                        continue;
+                    };
+                    let param = access!(boxed!(Path::Base((n.clone(), ns))), span);
+                    if *has_default {
+                        let cond = binary!({ boxed!(param.clone()) } Equal { boxed!(literal!(ConstValue::Nil, span)) }, span);
+                        let assign =
+                            assign!({ Path::Base((n.clone(), ns)) } = { value.clone() }, span);
+                        let clause = IfClause(Box::new(Block([assign].into())), Box::new(cond));
+                        stmts.push(Node(NodeKind::If(If(clause, [].into(), None)), span));
+                    }
+                    let target =
+                        Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), ns));
+                    stmts.push(assign!({ target } = { param }, span));
+                }
                 (params, stmts)
             } else {
                 (vec![], vec![])
             };
+            if let Some(init) = base_init {
+                body_stmts.insert(0, init);
+            }
             let body = FuncBody(
                 params.into(),
                 [].into(),
@@ -1851,7 +1899,7 @@ impl DesugarTransformer {
         if is_data_object && !has_eq {
             let other_name = name!("other", span);
             let mut cond: Option<Expr> = None;
-            for (name, key, _) in &props {
+            for (name, key, _, _, _) in &props {
                 let member = |base: &(String, Span)| match (name, key) {
                     (Some((n, ns)), _) => {
                         Path::Base(base.clone()) + PathSuffix::Dot((n.clone(), *ns))
@@ -1917,7 +1965,7 @@ impl DesugarTransformer {
 
             let mut chain = lit(&format!("{}{{", name.0));
             let prop_count = props.len();
-            for (idx, (name, key, _)) in props.iter().enumerate() {
+            for (idx, (name, key, _, _, _)) in props.iter().enumerate() {
                 let self_path = match (name, key) {
                     (Some((n, ns)), _) => {
                         Path::Base(name!(cgen::SELF, span)) + PathSuffix::Dot((n.clone(), *ns))

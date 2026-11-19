@@ -261,6 +261,41 @@ return a.x + a.y
 }
 
 #[test]
+fn extends_base_with_args() {
+    let r = simple_run_last(
+        r#"
+@data object A
+    x: int = 0
+end
+@data object B(y: int) extends A(y + 1)
+    z: int = 0
+end
+local b = B.new(3, 7)
+return b.x + b.z
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(11));
+}
+
+#[test]
+fn data_object_init_uses_property_defaults() {
+    let r = simple_run_last(
+        r#"
+@data object A
+    x: int = 3
+    y: int = 5
+end
+local a = A.new()
+local b = A.new(10)
+return a.x + a.y + b.x + b.y
+"#,
+    )
+    .unwrap();
+    assert_eq!(r, RuntimeValue::Int(23));
+}
+
+#[test]
 fn data_object_auto_tostring() {
     let r = simple_run_last(
         r#"

@@ -480,9 +480,12 @@ pub fn search_paths(base_dir: &Path, modules_dir: &str) -> Vec<String> {
 pub fn file_loader(
     templates: impl IntoIterator<Item = String>,
     config: DukaParsingConfig,
-) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
+) -> impl Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
++ Send
++ Sync
++ 'static {
     let templates: Vec<String> = templates.into_iter().collect();
-    move |name, caller_dir| {
+    move |name, caller_dir, _heap| {
         if duka_shared::module::is_relative_name(name) {
             resolve_relative(name, caller_dir, &config)
         } else {
@@ -627,9 +630,12 @@ fn package_relative(name: &str) -> Option<String> {
 pub fn memory_loader(
     modules: Arc<HashMap<String, Vec<u8>>>,
     modules_dir: &str,
-) -> impl Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static {
+) -> impl Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
++ Send
++ Sync
++ 'static {
     let modules_dir = modules_dir.to_owned();
-    move |name, caller_dir| {
+    move |name, caller_dir, _heap| {
         let base = if duka_shared::module::is_relative_name(name) {
             let dir = caller_dir.ok_or_else(|| {
                 format!("relative require '{name}' outside of a module (no base path)")
@@ -778,7 +784,7 @@ mod tests {
         let mut modules = HashMap::new();
         modules.insert("modules/a.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("a", None).unwrap();
+        let loaded = loader("a", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/a.duka"))
@@ -790,7 +796,7 @@ mod tests {
         let mut modules = HashMap::new();
         modules.insert("modules/a/b.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("a.b", None).unwrap();
+        let loaded = loader("a.b", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/a/b.duka"))
@@ -802,7 +808,7 @@ mod tests {
         let mut modules = HashMap::new();
         modules.insert("src/util.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules), "./");
-        let loaded = loader("./util", Some(Path::new("src"))).unwrap();
+        let loaded = loader("./util", Some(Path::new("src")), &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("src/util.duka"))
@@ -814,7 +820,12 @@ mod tests {
         let mut modules = HashMap::new();
         modules.insert("src/common.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("../../common", Some(Path::new("src/net/http"))).unwrap();
+        let loaded = loader(
+            "../../common",
+            Some(Path::new("src/net/http")),
+            &mut duka_gc::Heap::new(),
+        )
+        .unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("src/common.duka"))
@@ -826,7 +837,7 @@ mod tests {
         let mut modules = HashMap::new();
         modules.insert("modules/sub/init.duka".to_owned(), proto_bytes("return 1"));
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("sub", None).unwrap();
+        let loaded = loader("sub", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/sub/init.duka"))
@@ -836,8 +847,8 @@ mod tests {
     #[test]
     fn memory_loader_missing() {
         let loader = memory_loader(Arc::new(HashMap::new()), "./");
-        assert!(loader("missing", None).is_err());
-        assert!(loader("./x", None).is_err());
+        assert!(loader("missing", None, &mut duka_gc::Heap::new()).is_err());
+        assert!(loader("./x", None, &mut duka_gc::Heap::new()).is_err());
     }
 
     #[test]
@@ -859,7 +870,7 @@ entry = "src/init.duka"
             proto_bytes("return 42"),
         );
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("my-pkg", None).unwrap();
+        let loaded = loader("my-pkg", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/my-pkg/src/init.duka"))
@@ -885,7 +896,7 @@ entry = "src/init.duka"
             proto_bytes("return 'vnode'"),
         );
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("my-pkg.vnode", None).unwrap();
+        let loaded = loader("my-pkg.vnode", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/my-pkg/src/vnode.duka"))
@@ -909,7 +920,7 @@ name = "pkg2"
             proto_bytes("return 'default'"),
         );
         let loader = memory_loader(Arc::new(modules), "modules");
-        let loaded = loader("pkg2", None).unwrap();
+        let loaded = loader("pkg2", None, &mut duka_gc::Heap::new()).unwrap();
         assert_eq!(
             loaded_exec_path(&loaded),
             Some(PathBuf::from("modules/pkg2/src/main.duka"))

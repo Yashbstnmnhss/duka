@@ -543,6 +543,8 @@ pub struct ObjectDef {
     #[nonvisiting]
     pub base: Option<Name>,
     #[nonvisiting]
+    pub base_args: Option<Box<[Expr]>>,
+    #[nonvisiting]
     pub type_params: Box<[TypeParam]>,
     pub properties: Box<[ObjectProperty]>,
     pub static_methods: Box<[(Name, Attrs, FuncBody)]>,

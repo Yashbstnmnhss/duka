@@ -16,7 +16,8 @@ use crate::vm::coroutine::{CoState, NativeApi, VmGlobals, VmGlobalsHandle};
 ///
 /// The second argument is the directory of the module that called `require()`
 /// (from the module-path stack); relative patterns resolve against it.
-pub type ModuleLoader = dyn Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync;
+pub type ModuleLoader =
+    dyn Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String> + Send + Sync;
 
 /// Result of loading a module.
 pub enum LoadedModule {
@@ -28,6 +29,8 @@ pub enum LoadedModule {
     /// Raw resource bytes with file extension (e.g. "html", "css", "txt")
     /// The extension tells require() how to interpret the bytes.
     Resource { bytes: Vec<u8>, ext: Box<str> },
+    /// An already-built value, returned directly as the module.
+    Value(RuntimeValue),
 }
 
 /// Whether a require pattern is a relative path reference (`./x`, `../x`)
@@ -61,7 +64,10 @@ impl ModuleStore {
 
 pub fn new_vm_globals<F>(loader: F) -> VmGlobalsHandle
 where
-    F: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
+    F: Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
+        + Send
+        + Sync
+        + 'static,
 {
     let mut globals = VmGlobals::default();
     let mut store = ModuleStore::default();
@@ -84,7 +90,10 @@ pub fn reset(globals: &VmGlobalsHandle) {
 
 pub fn set_loader<F>(globals: &VmGlobalsHandle, loader: F)
 where
-    F: Fn(&str, Option<&Path>) -> Result<LoadedModule, String> + Send + Sync + 'static,
+    F: Fn(&str, Option<&Path>, &mut duka_gc::Heap) -> Result<LoadedModule, String>
+        + Send
+        + Sync
+        + 'static,
 {
     let mut borrowed = globals.borrow_mut();
     if borrowed.get::<ModuleStore>().is_none() {
@@ -155,7 +164,7 @@ pub fn impl_require(
     let _guard = LoadingGuard(loading, cache_key.clone());
 
     let loaded = match loader {
-        Some(f) => f(&name, caller_dir.as_deref()).map_err(DukaRuntimeError::ModuleError),
+        Some(f) => f(&name, caller_dir.as_deref(), h).map_err(DukaRuntimeError::ModuleError),
         None => Err(DukaRuntimeError::ModuleError(
             "Module system not configured: no loader set (call `set_loader` first)".to_string(),
         )),
@@ -184,6 +193,14 @@ pub fn impl_require(
                     .set(RuntimeValue::from_string(h, cache_key), val);
             }
             return Ok(val);
+        }
+        LoadedModule::Value(val) => {
+            if let Some(cache) = api.module_cache() {
+                cache
+                    .borrow_mut()
+                    .set(RuntimeValue::from_string(h, cache_key.clone()), val.clone());
+            }
+            (cache_key, val)
         }
         LoadedModule::Executable { proto, path } => {
             let globals_tbl = api.globals().ok_or_else(|| {
