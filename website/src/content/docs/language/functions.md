@@ -64,6 +64,25 @@ function f(b: ...): (int, int, ...)
 end
 ```
 
+### Default values
+
+A trailing parameter can have a default value. It is used when the caller omits it:
+
+```duka
+local function greet(name: string, greeting: string = "hello")
+    return greeting + ", " + name
+end
+
+greet("world")            -- "hello, world"
+greet("world", "hi")      -- "hi, world"
+```
+
+Parameters with defaults must form a contiguous suffix: once one parameter has a
+default, every parameter after it must have one too. A default may refer to earlier
+parameters (`function f(a: int, b: int = a + 1)`), and is evaluated at the start of
+each call. Just like [generic defaults](../types/#generics), it is written with `=`,
+but a value default is filled in at runtime rather than solved in the type context.
+
 ### Generics
 
 ```duka

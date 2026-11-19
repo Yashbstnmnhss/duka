@@ -1,3 +1,7 @@
+//! Syntax
+//!
+//! Syntax tree for duka
+
 pub mod green;
 pub mod session;
 pub mod text;

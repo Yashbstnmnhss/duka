@@ -38,7 +38,7 @@ mod tests {
 
     use crate::{
         analyzer::visitors::*, analyzer::*, lexer::span_mut::*, lexer::token::*, lexer::*,
-        parser::*,
+        parser::ast::NodeKind, parser::*,
     };
     use duka_shared::{errors::*, types::*};
     use std::io::Cursor;
@@ -68,6 +68,27 @@ mod tests {
                 .tokenize()
                 .unwrap()
         };
+    }
+
+    #[test]
+    fn token_kind_codes_are_distinct() {
+        use crate::parser::token_kind_code;
+        let kinds = [
+            TokenKind::Bang,
+            TokenKind::Question,
+            TokenKind::Export,
+            TokenKind::Match,
+            TokenKind::Ident("x".into()),
+            TokenKind::String([].into()),
+            TokenKind::LParen,
+            TokenKind::RParen,
+        ];
+        let codes: Vec<_> = kinds.iter().map(|kind| token_kind_code(kind)).collect();
+        for (i, code) in codes.iter().enumerate() {
+            for other in codes.iter().skip(i + 1) {
+                assert_ne!(code, other, "two token kinds got the same syntax code");
+            }
+        }
     }
 
     #[test]
@@ -121,6 +142,41 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn required_param_after_default_is_rejected() {
+        let result = Parser::parse(
+            from_string!("local function f(a = 1, b) return a + b end\n"),
+            Default::default(),
+        );
+        assert!(
+            result.is_err(),
+            "a required param after a default must be rejected"
+        );
+    }
+
+    #[test]
+    fn param_default_desugars_into_nil_guard() {
+        let mut chunk = Parser::parse(
+            from_string!("local function f(a: int, b: int = 2) return a + b end\n"),
+            Default::default(),
+        )
+        .unwrap();
+        transform(
+            &mut crate::analyzer::visitors::ParamDefaultDesugar::new(chunk.source_info.clone()),
+            &mut chunk,
+        );
+        let first = &chunk.block.0[0];
+        let NodeKind::FunctionDecl(_, _, func, _) = &first.0 else {
+            panic!("expected a function declaration");
+        };
+        let first = &func.4.0[0];
+        assert!(
+            matches!(first.0, NodeKind::If(_)),
+            "expected a nil guard at the start of the body, got {first:?}"
+        );
+        assert_eq!(func.4.0.len(), 2, "the original body statement must remain");
     }
 
     #[test]

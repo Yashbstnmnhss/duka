@@ -54,6 +54,26 @@ The return annotation takes the same spellings, and then the result is checked a
 
 See [kinds](./types.md#kinds) for the whole list and the examples.
 
+### Default values
+
+A trailing parameter can have a default type, written the same way as a
+[generic default](../types.md#generics). It is used when the caller leaves that
+argument out:
+
+```duka
+type function WithName(t: type, name: type = string)
+    return name
+end
+
+type A = WithName(int)        -- string
+type B = WithName(int, int)   -- int
+```
+
+A default may refer to earlier parameters (`type function Wrap(t: type, inner: type = t?)`),
+and defaults must form a contiguous suffix: a required parameter cannot follow one
+with a default. The default is a type expression, resolved when the type function is
+applied — not a runtime value.
+
 ## Interaction between the two contexts
 
 - type-context -> value-context: by [annotation](/language/types/#annotations)

@@ -217,8 +217,16 @@ fn params_of(body: &FuncBody) -> String {
     body.0
         .iter()
         .map(|p| match p {
-            Param::Typed((name, _), ty) => format!("{name}: {ty}"),
-            Param::Name((name, _)) => name.clone(),
+            Param::Named((name, _), ty, default) => {
+                let mut s = match ty {
+                    Some(ty) => format!("{name}: {ty}"),
+                    None => name.clone(),
+                };
+                if default.is_some() {
+                    s.push_str(" = ...");
+                }
+                s
+            }
             Param::Var(_, Some((name, _))) => format!("...: {name}"),
             Param::Var(_, None) => "...".to_owned(),
             Param::Pack((name, _), _) => format!("...{name}"),

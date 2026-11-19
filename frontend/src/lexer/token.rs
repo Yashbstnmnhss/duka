@@ -12,6 +12,7 @@ pub type Token = Spanned<TokenKind>;
 pub static EMPTY_TOKEN: Token = (TokenKind::terminator(), Span::EMPTY);
 
 #[derive(Debug, PartialEq, Clone, Info, Default, Serialize, Deserialize)]
+#[idcard(u16)]
 pub enum TokenKind {
     #[name("!")]
     Bang,

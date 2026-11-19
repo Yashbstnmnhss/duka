@@ -521,6 +521,8 @@ pub enum DukaParserError {
     InvalidOperator(Box<str>),
     #[error("Too many parse errors ({0}), stop parsing")]
     TooManyErrors(usize),
+    #[error("A required parameter cannot follow one with a default value")]
+    RequiredAfterDefault,
     /// The source nests deeper than the parser is willing to recurse. Read as a
     /// diagnostic rather than a crash: the parser recurses with the source, and
     /// a pathological file would otherwise overflow the stack and take the
@@ -563,6 +565,9 @@ impl DukaParserError {
             DukaParserError::NestingTooDeep(max) => format!(
                 "Simplify it: brackets, blocks and types may nest at most {max} levels deep"
             ),
+            DukaParserError::RequiredAfterDefault => {
+                "Move the parameters with defaults after the required ones".to_string()
+            }
         }
     }
 }

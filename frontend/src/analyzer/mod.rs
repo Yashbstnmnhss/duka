@@ -111,7 +111,7 @@ use crate::{
         prelude::{inject_builtins, inject_type_builtins, inject_type_prelude},
         visitors::{
             CalcFoldTransformer, DesugarTransformer, ExportDesugarer, LabelChecker, LoopChecker,
-            MeaninglessTransformer, VarArgChecker,
+            MeaninglessTransformer, ParamDefaultDesugar, VarArgChecker,
         },
     },
     parser::ast::{
@@ -560,7 +560,7 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     TypeDesc::FnLit(params, body) => {
                         for p in params.iter() {
-                            if let TypeFnParam::Typed(_, t) = p {
+                            if let TypeFnParam::Typed(_, t, _) = p {
                                 self.declare_record_fields(t, owner);
                             }
                         }
@@ -941,17 +941,12 @@ impl DukaAnalyzer for ScopeAnalyzer {
                     }
                     for param in block.0.iter() {
                         match param {
-                            Param::Typed((name, span), ty) => {
+                            Param::Named((name, span), ty, _) => {
                                 self.0.symbols.declare_parameter(
                                     name.as_str(),
                                     *span,
-                                    ty.as_type(),
+                                    ty.as_ref().map_or(Type::Any, |ty| ty.as_type()),
                                 );
-                            }
-                            Param::Name((name, span)) => {
-                                self.0
-                                    .symbols
-                                    .declare_parameter(name.as_str(), *span, Type::Any);
                             }
                             Param::Var(..) | Param::Pack(..) => {}
                         }
@@ -1107,6 +1102,11 @@ fn method_sig(body: &FuncBody, sigs: &Arc<Mutex<Vec<TypeSig>>>) -> FunctionType 
                 None => Type::Any,
             })
             .collect(),
+        required_params: {
+            let named = body.0.iter().filter(|p| p.name().is_some()).count();
+            let defaults = body.0.iter().filter(|p| p.default().is_some()).count();
+            (defaults > 0).then_some(named - defaults)
+        },
         var_arg: body.has_var_arg(),
         var_arg_bind: body.var_arg_bind().map(|(n, _)| n.clone().into_boxed_str()),
         returns: body
@@ -1306,6 +1306,10 @@ impl DukaAdapter for Adapter {
             &mut MeaninglessTransformer::new(chunk.source_info.clone()),
             chunk,
         );
+        a.extend(transform(
+            &mut ParamDefaultDesugar::new(chunk.source_info.clone()),
+            chunk,
+        ));
         let mut desugar = DesugarTransformer::new(chunk.source_info.clone());
         let b = transform(&mut desugar, chunk);
         let mut ex = ExportDesugarer::new();

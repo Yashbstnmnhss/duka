@@ -32,6 +32,37 @@ type CCC2 = Match(C(int))
 }
 
 #[test]
+fn type_fn_param_defaults() {
+    let res = simple_run_results(
+        r#"
+type function Pick(t: type, fallback: type = string)
+    return fallback
+end
+local x: Pick(int) = "hi"
+local y: Pick(int, int) = 42
+return x, y
+"#,
+    )
+    .unwrap();
+    assert_eq!(strs(&res)[0], "hi");
+    assert_eq!(strs(&res)[1], "42");
+}
+
+#[test]
+fn type_fn_param_default_referring_to_earlier_param() {
+    simple_run_results(
+        r#"
+type function Wrap(t: type, inner: type = t?)
+    return inner
+end
+local x: Wrap(int) = nil
+return x
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
 fn stdlib_calls_keep_their_declared_return_types() {
     // `os.clock` returns a float, `string.upper` a string: if the standard
     // library were not in the symbol table these would all be `any`

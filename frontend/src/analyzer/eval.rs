@@ -958,7 +958,7 @@ impl<'a> EvalCtx<'a> {
             }
             TypeDesc::FnLit(params, body) => {
                 for p in params.iter() {
-                    if let TypeFnParam::Typed(.., t) = p {
+                    if let TypeFnParam::Typed(_, t, _) = p {
                         let _ = self.eval_type(t);
                     }
                 }
@@ -1322,24 +1322,18 @@ impl<'a> EvalCtx<'a> {
             return tv!(Type::Any);
         }
         self.fuel -= 1;
+        let Some(args) = self.fill_default_args(name, params, &args, span) else {
+            return tv!(Type::Any);
+        };
         let expected_arity = params
             .iter()
             .filter(|p| !matches!(p, TypeFnParam::Var(..)))
             .count();
-        let open = expected_arity != params.len();
-        if args.len() < expected_arity || (!open && args.len() != expected_arity) {
-            self.err(
-                name,
-                format!("expected {expected_arity} arguments, got {}", args.len()),
-                span,
-            );
-            return tv!(Type::Any);
-        }
         let mut frame = HashMap::new();
         for (param, arg) in params.iter().zip(args.iter()) {
             let pname = match param {
-                TypeFnParam::Typed((n, _), _) => n,
-                TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) => &n.0,
+                TypeFnParam::Typed((n, _), _, _) => n,
+                TypeFnParam::Name(n, _) | TypeFnParam::Kinded(n, _, _) => &n.0,
                 TypeFnParam::Var(..) => continue,
             };
             frame.insert(pname.clone().into_boxed_str(), (arg.clone(), false));
@@ -1498,6 +1492,9 @@ impl<'a> EvalCtx<'a> {
         args: Box<[TypeValue]>,
         span: Span,
     ) -> TypeValue {
+        let Some(args) = self.fill_default_args(name, params, &args, span) else {
+            return tv!(Type::Any);
+        };
         let fp = Self::fingerprint(name, &args, body);
         if let Some(&idx) = self.cache_fp.get(&fp) {
             let res = self.results.lock().unwrap_or_else(|e| e.into_inner())[idx]
@@ -1576,9 +1573,17 @@ impl<'a> EvalCtx<'a> {
                         self.err(&next_name, "type function body missing", next_span);
                         break tv!(Type::Any);
                     };
-                    let Some(next_frame) =
-                        self.bind_params(&next_name, &next_def.params, &next_args, next_span)
+                    let Some(next_args_filled) =
+                        self.fill_default_args(&next_name, &next_def.params, &next_args, next_span)
                     else {
+                        break tv!(Type::Any);
+                    };
+                    let Some(next_frame) = self.bind_params(
+                        &next_name,
+                        &next_def.params,
+                        &next_args_filled,
+                        next_span,
+                    ) else {
                         break tv!(Type::Any);
                     };
                     if let Some(top) = self.frames.last_mut() {
@@ -1780,7 +1785,7 @@ impl<'a> EvalCtx<'a> {
             }
             TypeDesc::FnLit(params, body) => {
                 let spelling = |p: &TypeFnParam| match p {
-                    TypeFnParam::Typed(_, t) => kind_spelling(t),
+                    TypeFnParam::Typed(_, t, _) => kind_spelling(t),
                     TypeFnParam::Kinded(..) => true,
                     _ => false,
                 };
@@ -1809,6 +1814,70 @@ impl<'a> EvalCtx<'a> {
             Type::Any | Type::Unknown => Kind::AnyType,
             t => Kind::OfType(t),
         }
+    }
+
+    fn fill_default_args(
+        &mut self,
+        fn_name: &str,
+        params: &[TypeFnParam],
+        args: &[TypeValue],
+        span: Span,
+    ) -> Option<Box<[TypeValue]>> {
+        let fixed = params
+            .iter()
+            .filter(|p| !matches!(p, TypeFnParam::Var(..)))
+            .count();
+        let open = fixed != params.len();
+        let required = params
+            .iter()
+            .take(fixed)
+            .filter(|p| p.default().is_none())
+            .count();
+        if args.len() < required || (!open && args.len() > fixed) {
+            self.err(
+                fn_name,
+                format!("expected {required} arguments, got {}", args.len()),
+                span,
+            );
+            return None;
+        }
+        if args.len() >= fixed {
+            return Some(args.to_vec().into_boxed_slice());
+        }
+        let mut expanded = args.to_vec();
+        let mut frame = HashMap::new();
+        for (param, arg) in params.iter().take(args.len()).zip(args.iter()) {
+            if let Some(name) = param.name() {
+                frame.insert(name.0.clone().into_boxed_str(), (arg.clone(), false));
+            }
+        }
+        let saved = std::mem::take(&mut self.frames);
+        self.frames.push(frame);
+        let mut ok = true;
+        for index in args.len()..fixed {
+            let param = &params[index];
+            let Some(default) = param.default() else {
+                ok = false;
+                break;
+            };
+            let value = self.eval_type(default);
+            if let Some(name) = param.name()
+                && let Some(top) = self.frames.last_mut()
+            {
+                top.insert(name.0.clone().into_boxed_str(), (value.clone(), false));
+            }
+            expanded.push(value);
+        }
+        self.frames = saved;
+        if !ok {
+            self.err(
+                fn_name,
+                format!("expected {required} arguments, got {}", args.len()),
+                span,
+            );
+            return None;
+        }
+        Some(expanded.into_boxed_slice())
     }
 
     fn bind_params(
@@ -1855,8 +1924,8 @@ impl<'a> EvalCtx<'a> {
         self.frames.push(frame.clone());
         for (param, arg) in params.iter().zip(args.iter()) {
             let verdict = match param {
-                TypeFnParam::Kinded(_, kind) => kind_accepts(kind, arg),
-                TypeFnParam::Typed(_, t) => {
+                TypeFnParam::Kinded(_, kind, _) => kind_accepts(kind, arg),
+                TypeFnParam::Typed(_, t, _) => {
                     let kind = self.eval_kind(t);
                     kind_accepts(&kind, arg)
                 }
@@ -3470,7 +3539,7 @@ impl Visitor for EvalCtx<'_> {
 impl EvalCtx<'_> {
     fn eval_func_annotations(&mut self, body: &crate::parser::ast::FuncBody) {
         for param in body.0.iter() {
-            if let Param::Typed((_, _), ty) = param {
+            if let Param::Named(_, Some(ty), _) = param {
                 self.eval_type(ty);
             }
         }
@@ -3487,8 +3556,11 @@ impl EvalCtx<'_> {
         body: &crate::parser::ast::FuncBody,
     ) {
         for param in params.iter() {
-            if let TypeFnParam::Typed((_, _), ty) = param {
+            if let TypeFnParam::Typed((_, _), ty, _) = param {
                 self.eval_type(ty);
+            }
+            if let Some(default) = param.default() {
+                self.eval_type(default);
             }
         }
         if let Some(ty) = &body.2 {
@@ -3703,8 +3775,10 @@ fn rename_map(params: &[TypeFnParam], args: &[TypeValue]) -> RenameMap {
         .enumerate()
         .filter_map(|(i, p)| {
             let name = match p {
-                TypeFnParam::Typed((n, _), _) => n.clone().into_boxed_str(),
-                TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) => n.0.clone().into_boxed_str(),
+                TypeFnParam::Typed((n, _), _, _) => n.clone().into_boxed_str(),
+                TypeFnParam::Name(n, _) | TypeFnParam::Kinded(n, _, _) => {
+                    n.0.clone().into_boxed_str()
+                }
                 TypeFnParam::Var(..) => return None,
             };
             let to = match args.get(i).map(|v| v.to_type()) {

@@ -435,7 +435,7 @@ fn walk_stmt(stmt: &Stmt, out: &mut Vec<(String, Span)>) {
         NodeKind::TypeAlias(_, ty) => walk_type_value(ty, out),
         NodeKind::TypeFunction(_, params, body) => {
             for p in params.iter() {
-                if let TypeFnParam::Typed(_, ty) = p {
+                if let TypeFnParam::Typed(_, ty, _) = p {
                     walk_type_value(ty, out);
                 }
             }
@@ -497,7 +497,7 @@ fn walk_block(block: &Block, out: &mut Vec<(String, Span)>) {
 
 fn walk_func_body(body: &FuncBody, out: &mut Vec<(String, Span)>) {
     for p in body.0.iter() {
-        if let Param::Typed(_, ty) = p {
+        if let Param::Named(_, Some(ty), _) = p {
             walk_type_value(ty, out);
         }
     }

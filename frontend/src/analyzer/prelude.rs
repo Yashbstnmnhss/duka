@@ -118,9 +118,9 @@ fn type_fn_meta(name: String, params: &[TypeFnParam]) -> MetaInfo {
         .iter()
         .map(|p| {
             let (name, kind) = match p {
-                TypeFnParam::Name(n) => (n.0.clone(), "type".to_owned()),
-                TypeFnParam::Kinded(n, kind) => (n.0.clone(), kind.to_string()),
-                TypeFnParam::Typed(n, ty) => (n.0.clone(), ty.to_string()),
+                TypeFnParam::Name(n, _) => (n.0.clone(), "type".to_owned()),
+                TypeFnParam::Kinded(n, kind, _) => (n.0.clone(), kind.to_string()),
+                TypeFnParam::Typed(n, ty, _) => (n.0.clone(), ty.to_string()),
                 TypeFnParam::Var(_, Some(n)) => (format!("...{}", n.0), "type".to_owned()),
                 TypeFnParam::Var(_, None) => ("...".to_owned(), "type".to_owned()),
             };

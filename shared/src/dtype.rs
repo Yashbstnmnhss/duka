@@ -240,6 +240,7 @@ pub fn map_type(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
         ),
         Type::Function(Some(ft)) => Type::Function(Some(FunctionType {
             params: ft.params.iter().map(|x| map_type(x, f)).collect(),
+            required_params: ft.required_params,
             var_arg: ft.var_arg,
             var_arg_bind: ft.var_arg_bind.clone(),
             returns: ft.returns.iter().map(|x| map_type(x, f)).collect(),
@@ -1412,6 +1413,9 @@ fn folds_into(wider: &Type, narrower: &Type) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
+    /// leading params that must be supplied; the rest have defaults. None means all required.
+    #[serde(default)]
+    pub required_params: Option<usize>,
     pub var_arg: bool,
     /// The name a rest parameter collects its types into, `...: Ts`
     pub var_arg_bind: Option<Box<str>>,
@@ -1444,6 +1448,7 @@ impl FunctionType {
         };
         FunctionType {
             params: self.params.iter().map(to_param).collect(),
+            required_params: self.required_params,
             returns: self.returns.iter().map(to_param).collect(),
             return_var_arg: self
                 .return_var_arg

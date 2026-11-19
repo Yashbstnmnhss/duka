@@ -1287,35 +1287,36 @@ impl<'a> TypeCheckerCtx<'a> {
         let mut named = 0usize;
         for param in body.0.iter() {
             match param {
-                Param::Typed((name, span), ty) => {
-                    named += 1;
-                    let ty = normalize_generic_names(ty, &names);
-                    self.check_type_names(&ty);
-                    let ty = self.resolve_type(&ty);
-                    self.declare(name, *span, ty)
-                }
-                Param::Name((name, span)) => {
-                    // a literal the caller hands a signature to is read with
-                    // the parameters that signature supplies
-                    let seeded = self
-                        .seeds
-                        .ctx_params
-                        .get(&key)
-                        .and_then(|p| p.get(named))
-                        .cloned()
-                        .filter(|t| *t != Type::Unknown);
-                    named += 1;
-                    match seeded {
-                        Some(ty) => self.declare(name, *span, ty),
-                        None if self.env.strict.implicit_any => {
-                            // the missing annotation is reported where the
-                            // signature is built; the body still needs the
-                            // name, and it reads as something that gives
-                            // nothing back
-                            self.tables.implicit_unknown.insert(name.clone().into());
-                            self.declare(name, *span, Type::Unknown)
+                Param::Named((name, span), ty, _) => {
+                    if let Some(ty) = ty {
+                        named += 1;
+                        let ty = normalize_generic_names(ty, &names);
+                        self.check_type_names(&ty);
+                        let ty = self.resolve_type(&ty);
+                        self.declare(name, *span, ty)
+                    } else {
+                        // a literal the caller hands a signature to is read with
+                        // the parameters that signature supplies
+                        let seeded = self
+                            .seeds
+                            .ctx_params
+                            .get(&key)
+                            .and_then(|p| p.get(named))
+                            .cloned()
+                            .filter(|t| *t != Type::Unknown);
+                        named += 1;
+                        match seeded {
+                            Some(ty) => self.declare(name, *span, ty),
+                            None if self.env.strict.implicit_any => {
+                                // the missing annotation is reported where the
+                                // signature is built; the body still needs the
+                                // name, and it reads as something that gives
+                                // nothing back
+                                self.tables.implicit_unknown.insert(name.clone().into());
+                                self.declare(name, *span, Type::Unknown)
+                            }
+                            None => self.declare_inferred(name, *span, Type::Any, true),
                         }
-                        None => self.declare_inferred(name, *span, Type::Any, true),
                     }
                 }
                 Param::Var(..) | Param::Pack(..) => {
@@ -1533,11 +1534,11 @@ impl<'a> TypeCheckerCtx<'a> {
                 let outer = bound.len();
                 for param in params.iter() {
                     match param {
-                        TypeFnParam::Typed((name, _), ty) => {
+                        TypeFnParam::Typed((name, _), ty, _) => {
                             self.check_type_names_with(ty, bound);
                             bound.push(name.clone().into_boxed_str());
                         }
-                        TypeFnParam::Name((name, _)) | TypeFnParam::Var(_, Some((name, _))) => {
+                        TypeFnParam::Name((name, _), _) | TypeFnParam::Var(_, Some((name, _))) => {
                             bound.push(name.clone().into_boxed_str())
                         }
                         TypeFnParam::Kinded(..) | TypeFnParam::Var(_, None) => {}
@@ -1764,7 +1765,7 @@ impl<'a> TypeCheckerCtx<'a> {
                     .params()
                     .iter()
                     .map(|p| match p {
-                        TypeFnParam::Typed((_, _), t) => t.to_string(),
+                        TypeFnParam::Typed((_, _), t, _) => t.to_string(),
                         _ => "any".to_owned(),
                     })
                     .collect::<Vec<_>>()
@@ -1953,6 +1954,11 @@ impl TypeCheckerCtx<'_> {
                     }
                 })
                 .collect(),
+            required_params: {
+                let named = body.0.iter().filter(|p| p.name().is_some()).count();
+                let defaults = body.0.iter().filter(|p| p.default().is_some()).count();
+                (defaults > 0).then_some(named - defaults)
+            },
             var_arg: body.has_var_arg(),
             var_arg_bind: body.var_arg_bind().map(|(name, span)| {
                 if !type_params
@@ -2180,7 +2186,7 @@ pub fn normalize_generic_names(tv: &TypeDesc, names: &[&str]) -> TypeDesc {
             let FuncBody(_, _, ret, _, _) = &mut cloned;
             let mut fparams = fparams.clone();
             for p in fparams.iter_mut() {
-                if let TypeFnParam::Typed(_, t) = p {
+                if let TypeFnParam::Typed(_, t, _) = p {
                     *t = normalize_generic_names(t, names);
                 }
             }
@@ -6099,12 +6105,15 @@ impl TypeCheckerCtx<'_> {
         }
         // a signature carries only the named parameters, the rest parameter is
         // `var_arg` and says nothing is required beyond them
-        let required = ft.params.len();
+        let required = ft
+            .required_params
+            .unwrap_or(ft.params.len())
+            .min(ft.params.len());
         // an argument with no parameter to land in is a mistake in either
         // direction: too few leaves the call short, and too many leaves the
         // surplus with nowhere to go, so it is dropped at runtime rather than
         // refused -- which is why it has to be caught here
-        if got < required || (got > required && !ft.var_arg) {
+        if got < required || (got > ft.params.len() && !ft.var_arg) {
             self.err(
                 DukaSemanticError::ArgumentCountMismatch(
                     argument_count(required),
@@ -6383,6 +6392,7 @@ pub(crate) fn substitute_params(ty: &Type, subst: &HashMap<Box<str>, Type>) -> T
                 .iter()
                 .map(|t| substitute_params(t, subst))
                 .collect(),
+            required_params: ft.required_params,
             var_arg_bind: ft.var_arg_bind.clone(),
             returns: ft
                 .returns
@@ -6479,6 +6489,7 @@ pub(crate) fn substitute_back_edges(ty: &Type, subst: &HashMap<Box<str>, Type>) 
                 .iter()
                 .map(|t| substitute_back_edges(t, subst))
                 .collect(),
+            required_params: ft.required_params,
             var_arg_bind: ft.var_arg_bind.clone(),
             returns: ft
                 .returns
@@ -9275,8 +9286,22 @@ return 0
     }
 
     #[test]
+    fn default_params_allow_omitting_trailing_args() {
+        let errors = check(
+            "local function f(a: int, b: int = 2, c: int = 3)\nreturn a + b + c\nend\nlocal x = f(1)\nlocal y = f(1, 10)\nlocal z = f(1, 10, 100)\n",
+        );
+        assert!(
+            !errors.iter().any(|e| matches!(
+                e.kind,
+                DukaErrorKind::Semantic(DukaSemanticError::ArgumentCountMismatch(..))
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn object_base_resolves() {
-        let errors = check("object A\nend\nobject B : A\nend");
+        let errors = check("object A\nend\nobject B extends A\nend");
         assert!(
             !errors.iter().any(|e| matches!(
                 e.kind,
@@ -9668,7 +9693,7 @@ return 0
 
     #[test]
     fn object_circular_base() {
-        let errors = check("object A : B\nend\nobject B : A\nend");
+        let errors = check("object A extends B\nend\nobject B extends A\nend");
         assert!(
             errors.iter().any(|e| matches!(
                 e.kind,

@@ -538,11 +538,11 @@ local gen = function()
     if i > 4 then return false end
     return true, i
 end
-for k in gen do
+for k in gen do -- FIXME: for loop variables' types
     if k == 2 then continue end
     if k == 4 then break end
     hits = hits + 1
-    sum = sum + k
+    sum = sum + as.<int>(k)
 end
 return sum * 10 + hits
 "#,

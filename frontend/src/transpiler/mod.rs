@@ -100,7 +100,7 @@ impl DebugTranspiler {
             params,
             |st, p| {
                 match p {
-                    Param::Name(n) | Param::Typed(n, _) => st.emit(&n.0),
+                    Param::Named(n, _, _) => st.emit(&n.0),
                     // a rest parameter's annotation is a type; types are not emitted
                     Param::Var(..) => st.emit("..."),
                     Param::Pack(n, _) => st.emit(&format!("...{}", n.0)),
@@ -514,9 +514,9 @@ impl DebugTranspiler {
                     params,
                     |st, p| {
                         match p {
-                            TypeFnParam::Name(n)
-                            | TypeFnParam::Kinded(n, _)
-                            | TypeFnParam::Typed(n, _) => st.emit(&n.0),
+                            TypeFnParam::Name(n, _)
+                            | TypeFnParam::Kinded(n, _, _)
+                            | TypeFnParam::Typed(n, _, _) => st.emit(&n.0),
                             TypeFnParam::Var(_, Some(n)) => st.emit(&format!("...{}", n.0)),
                             TypeFnParam::Var(_, None) => st.emit("..."),
                         }
@@ -536,9 +536,9 @@ impl DebugTranspiler {
                     params,
                     |st, p| {
                         match p {
-                            TypeFnParam::Name(n)
-                            | TypeFnParam::Kinded(n, _)
-                            | TypeFnParam::Typed(n, _) => st.emit(&n.0),
+                            TypeFnParam::Name(n, _)
+                            | TypeFnParam::Kinded(n, _, _)
+                            | TypeFnParam::Typed(n, _, _) => st.emit(&n.0),
                             TypeFnParam::Var(_, Some(n)) => st.emit(&format!("...{}", n.0)),
                             TypeFnParam::Var(_, None) => st.emit("..."),
                         }

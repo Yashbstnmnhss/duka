@@ -688,6 +688,7 @@ impl Solution {
                 let (returns, return_var_arg) = self.returns_of(ft);
                 Type::Function(Some(FunctionType {
                     params: ft.params.iter().map(|t| self.substitute(t)).collect(),
+                    required_params: ft.required_params,
                     var_arg: ft.var_arg,
                     var_arg_bind: ft.var_arg_bind.clone(),
                     returns: returns.into(),

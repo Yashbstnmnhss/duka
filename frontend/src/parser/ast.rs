@@ -315,10 +315,8 @@ impl FuncBody {
     }
     pub fn named_params(&self) -> impl Iterator<Item = (&Name, Option<&TypeDesc>)> {
         self.0.iter().filter_map(|p| match p {
-            Param::Typed(name, ty) => Some((name, Some(ty))),
-            Param::Name(name) => Some((name, None)),
-            Param::Var(..) => None,
-            Param::Pack(_, _) => None,
+            Param::Named(name, ty, _) => Some((name, ty.as_ref())),
+            Param::Var(..) | Param::Pack(..) => None,
         })
     }
     /// The name a rest parameter collects its types into, `...: Ts`
@@ -720,25 +718,58 @@ pub enum Param {
     /// `...Ts` in a type context: the arguments past the fixed ones collect
     /// into `Ts`, which reads as an ordinary array
     Pack(Name, Span),
-    Name(Name),
-    /// 带类型标注的参数
-    Typed(Name, TypeDesc),
+    /// `a`, `a: int`, `a = expr`, `a: int = expr`
+    Named(Name, Option<TypeDesc>, Option<Box<Expr>>),
+}
+
+impl Param {
+    pub fn name(&self) -> Option<&Name> {
+        match self {
+            Param::Named(name, _, _) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn default(&self) -> Option<&Expr> {
+        match self {
+            Param::Named(_, _, default) => default.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, SpanMut)]
 pub enum TypeFnParam {
-    Name(Name),
-    Kinded(Name, Kind<NoExt>),
-    Typed(Name, TypeDesc),
+    Name(Name, Option<TypeDesc>),
+    Kinded(Name, Kind<NoExt>, Option<TypeDesc>),
+    Typed(Name, TypeDesc, Option<TypeDesc>),
     Var(Span, Option<Name>),
 }
 
 impl TypeFnParam {
     pub fn name(&self) -> Option<&Name> {
         match self {
-            TypeFnParam::Name(n) | TypeFnParam::Kinded(n, _) | TypeFnParam::Typed(n, _) => Some(n),
+            TypeFnParam::Name(n, _)
+            | TypeFnParam::Kinded(n, _, _)
+            | TypeFnParam::Typed(n, _, _) => Some(n),
             TypeFnParam::Var(_, Some(n)) => Some(n),
             TypeFnParam::Var(_, None) => None,
+        }
+    }
+    pub fn default(&self) -> Option<&TypeDesc> {
+        match self {
+            TypeFnParam::Name(_, d)
+            | TypeFnParam::Kinded(_, _, d)
+            | TypeFnParam::Typed(_, _, d) => d.as_ref(),
+            TypeFnParam::Var(..) => None,
+        }
+    }
+    pub fn with_default(self, default: Option<TypeDesc>) -> Self {
+        match self {
+            TypeFnParam::Name(n, _) => TypeFnParam::Name(n, default),
+            TypeFnParam::Kinded(n, k, _) => TypeFnParam::Kinded(n, k, default),
+            TypeFnParam::Typed(n, t, _) => TypeFnParam::Typed(n, t, default),
+            other => other,
         }
     }
     pub fn lower(name: Name, desc: TypeDesc) -> Self {
@@ -755,8 +786,8 @@ impl TypeFnParam {
             _ => None,
         };
         match lowered {
-            Some(kind) => TypeFnParam::Kinded(name, kind),
-            None => TypeFnParam::Typed(name, desc),
+            Some(kind) => TypeFnParam::Kinded(name, kind, None),
+            None => TypeFnParam::Typed(name, desc, None),
         }
     }
 }
@@ -764,9 +795,9 @@ impl TypeFnParam {
 impl std::fmt::Display for TypeFnParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeFnParam::Name((name, _)) => write!(f, "{name}"),
-            TypeFnParam::Kinded((name, _), kind) => write!(f, "{name}: {kind}"),
-            TypeFnParam::Typed((name, _), ty) => write!(f, "{name}: {ty}"),
+            TypeFnParam::Name((name, _), _) => write!(f, "{name}"),
+            TypeFnParam::Kinded((name, _), kind, _) => write!(f, "{name}: {kind}"),
+            TypeFnParam::Typed((name, _), ty, _) => write!(f, "{name}: {ty}"),
             TypeFnParam::Var(_, Some((name, _))) => write!(f, "...{name}"),
             TypeFnParam::Var(_, None) => write!(f, "..."),
         }
@@ -1583,7 +1614,7 @@ impl Visit for TypeDesc {
             }
             TypeDesc::FnLit(params, body) => {
                 for p in params.iter() {
-                    if let TypeFnParam::Typed(_, t) = p {
+                    if let TypeFnParam::Typed(_, t, _) = p {
                         t.visit(visitor);
                     }
                 }
@@ -1635,7 +1666,7 @@ impl VisitMut for TypeDesc {
             }
             TypeDesc::FnLit(params, body) => {
                 for p in params.iter_mut() {
-                    if let TypeFnParam::Typed(_, t) = p {
+                    if let TypeFnParam::Typed(_, t, _) = p {
                         t.visit_mut(visitor);
                     }
                 }

@@ -1,0 +1,6 @@
+local function f(a: int, b: int = 2, c: int = 3)
+    return a + b + c
+end
+print(f(1))
+print(f(1, 10))
+print(f(1, 10, 100))

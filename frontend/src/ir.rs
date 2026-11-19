@@ -1258,7 +1258,7 @@ impl IRGenerator {
         }
         for param in params {
             match param {
-                Param::Name((name, _)) | Param::Typed((name, _), _) => {
+                Param::Named((name, _), _, _) => {
                     let reg = irg.allocator.alloc()?;
                     irg.scopes.declare_local(&name, reg)?; //NOTICE, there already exist values
                 }

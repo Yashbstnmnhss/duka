@@ -910,6 +910,40 @@ fn rewrite_super_base(path: &mut Path, sn: &str) {
 }
 
 transformer! {
+    ParamDefaultDesugar(),
+    fn visit_node(&mut self, stmt: &mut Stmt) {
+        let func = match &mut stmt.0 {
+            NodeKind::Function(func, _) => Some(func),
+            NodeKind::FunctionDecl(_, _, func, _) => Some(&mut **func),
+            _ => None,
+        };
+        let Some(func) = func else { return };
+        let span = stmt.1;
+        let mut guards = vec![];
+        for param in func.0.iter() {
+            let (name, default) = match param {
+                Param::Named(name, _, Some(default)) => (name, default),
+                _ => continue,
+            };
+            let at = boxed!(access!(boxed!(Path::Base(name.clone())), span));
+            let nil = boxed!(literal!(ConstValue::Nil, span));
+            let cond = binary!({ at } Equal { nil }, span);
+            let target = Path::Base(name.clone());
+            let assign = assign!({ target } = { *default.clone() }, span);
+            let clause = IfClause(Box::new(Block([assign].into())), Box::new(cond));
+            guards.push(Node(NodeKind::If(If(clause, [].into(), None)), span));
+        }
+        if guards.is_empty() {
+            return;
+        }
+        let body = &mut func.4;
+        let stmts = std::mem::take(&mut body.0).into_vec();
+        guards.extend(stmts);
+        body.0 = guards.into_boxed_slice();
+    }
+}
+
+transformer! {
     DesugarTransformer(objects: Vec<ObjectDef> = vec![]),
     fn visit_block(&mut self, block: &mut Block) {
         let stmts = std::mem::take(&mut block.0);
@@ -1350,7 +1384,10 @@ impl DesugarTransformer {
                                         ),
                                         span * NodeKind::Function(
                                             FuncBody(
-                                                names.into_iter().map(Param::Name).collect(),
+                                                names
+                                                    .into_iter()
+                                                    .map(|name| Param::Named(name, None, None))
+                                                    .collect(),
                                                 [].into(),
                                                 None,
                                                 [].into(),
@@ -1473,7 +1510,7 @@ impl DesugarTransformer {
                                             FuncBody(
                                                 names
                                                     .into_iter()
-                                                    .map(|v| Param::Name(v.0.0))
+                                                    .map(|v| Param::Named(v.0.0, None, None))
                                                     .collect(),
                                                 [].into(),
                                                 None,
@@ -1773,7 +1810,9 @@ impl DesugarTransformer {
             let (params, body_stmts): (Vec<Param>, Vec<Stmt>) = if is_data_object {
                 let params = props
                     .iter()
-                    .filter_map(|(name, _, _)| name.clone().map(Param::Name))
+                    .filter_map(|(name, _, _)| {
+                        name.clone().map(|name| Param::Named(name, None, None))
+                    })
                     .collect();
                 let stmts = props
                     .iter()
@@ -1835,7 +1874,7 @@ impl DesugarTransformer {
                 });
             }
             let body = FuncBody(
-                [Param::Name(other_name)].into(),
+                [Param::Named(other_name, None, None)].into(),
                 [].into(),
                 None,
                 [].into(),

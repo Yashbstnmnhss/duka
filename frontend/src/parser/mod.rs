@@ -277,12 +277,8 @@ pub struct IncrementalParseCache {
     tree: Option<SyntaxTree>,
 }
 
-fn token_kind_code(kind: &TokenKind) -> Kind {
-    let mut hash: u32 = 0;
-    for byte in kind.name().bytes() {
-        hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
-    }
-    KIND_TOKEN_BASE + (hash % 4096) as Kind
+pub(crate) fn token_kind_code(kind: &TokenKind) -> Kind {
+    KIND_TOKEN_BASE + kind.disc()
 }
 
 fn tree_events_from_tokens(tokens: &[Token], source: &str) -> Vec<duka_syntax::TreeEvent> {
@@ -393,6 +389,7 @@ enum VarDesc {
 
 /// main duka
 impl Parser<Token> {
+    #[inline]
     pub fn new(stream: TokenStream<Token>, config: DukaParserConfig) -> Self {
         Self::from_tokens(stream, config)
     }
@@ -1407,20 +1404,25 @@ impl Parser<Token> {
 
         let generics = self.opt_ty_par_def_list()?;
 
-        let base = opt![
-            self then Colon:
-            { Some(self.must_ident()?) }
-            else: None
-        ];
+        let mut properties = between!(self:
+            try[vec![]] opt(self.par_list(false))[vec![]]
+            in LParen, RParen
+        )
+        .into_iter()
+        .map(|p| match p {
+            Param::Named(n, ty, v) => ObjectProperty::NameValue(n, v, ty),
+            _ => todo!(),
+        })
+        .collect::<Vec<_>>();
+
         let base = opt![
             self then Extends:
             { Some(self.must_ident()?) }
-            else: base
+            else: None
         ];
 
         let mut static_methods = vec![];
         let mut methods = vec![];
-        let mut properties = vec![];
 
         many! {
             loop:
@@ -2500,10 +2502,6 @@ impl Parser<Token> {
             None
         };
 
-        // Inside a `<...>` list the `>` that follows is the end of the list, so
-        // the body stops at it. Everywhere else this is an ordinary expression
-        // and runs as far as it likes, which is what the standard library's own
-        // `type fn` bodies rely on.
         let body = if self.in_type_args {
             must!(self.expr_limit(Self::type_fn_body_limit(), false))?
         } else {
@@ -2553,7 +2551,7 @@ impl Parser<Token> {
     fn fn_body(&mut self) -> Result<FuncBody, DukaSpannedError> {
         let generics = self.opt_ty_par_def_list()?;
         let params = between!(self:
-            must opt(self.par_list())[vec![]]
+            must opt(self.par_list(true))[vec![]]
             in LParen, RParen
         );
 
@@ -2694,7 +2692,7 @@ impl Parser<Token> {
         let generics = self.opt_ty_par_def_list()?;
 
         let params = between!(self:
-            must opt(self.par_list())[vec![]]
+            must opt(self.par_list(true))[vec![]]
             in LParen, RParen
         );
         self.function_body_tail(generics, params, declared, false)
@@ -3893,16 +3891,18 @@ impl Parser<Token> {
     }
 
     // without `<` `>`
-    fn par_list(&mut self) -> Result<Vec<Param>, DukaSpannedError> {
+    fn par_list(&mut self, has_var: bool) -> Result<Vec<Param>, DukaSpannedError> {
         let parse_param = |me: &mut Self| {
             let name = me.must_ident()?;
-            if me.config.type_annotations && me.then(TokenKind::Colon)? {
-                Ok(Param::Typed(name, me.parse_type_annotation()?))
+            let ty = if me.config.type_annotations && me.then(TokenKind::Colon)? {
+                Some(me.parse_type_annotation()?)
             } else {
-                Ok(Param::Name(name))
-            }
+                None
+            };
+            let default = opt![me then Assign: { Some(Box::new(must!(me.expr())?)) } else: None];
+            Ok(Param::Named(name, ty, default))
         };
-        Ok(if self.then(TokenKind::Dots)? {
+        Ok(if has_var && self.then(TokenKind::Dots)? {
             // `(...)` 单独作为唯一参数
             vec![if self.typing_context {
                 self.type_rest_value_param()?
@@ -3920,7 +3920,7 @@ impl Parser<Token> {
             let mut res: Vec<Param> = vec![];
             res.push(parse_param(self)?);
             while self.then(TokenKind::Comma)? {
-                if self.then(TokenKind::Dots)? {
+                if has_var && self.then(TokenKind::Dots)? {
                     res.push(if self.typing_context {
                         self.type_rest_value_param()?
                     } else {
@@ -3935,7 +3935,16 @@ impl Parser<Token> {
                     });
                     break;
                 }
-                res.push(parse_param(self)?);
+                let param = parse_param(self)?;
+                if res.iter().any(|p| p.default().is_some()) && param.default().is_none() {
+                    let span = param.name().map(|n| n.1).unwrap_or(self.current_span);
+                    return Err(DukaSpannedError::new(
+                        DukaParserError::RequiredAfterDefault.into(),
+                        span,
+                        self.source_info.clone(),
+                    ));
+                }
+                res.push(param);
             }
             res
         })
@@ -3945,12 +3954,22 @@ impl Parser<Token> {
         self.kinding_context = true;
         let parse_param = |p: &mut Self| {
             let name = p.must_type_name()?;
-            if p.config.type_annotations && p.then(TokenKind::Colon)? {
+            let param = if p.config.type_annotations && p.then(TokenKind::Colon)? {
                 let desc = p.parse_type_annotation()?;
-                Ok(TypeFnParam::lower(name, desc))
+                TypeFnParam::lower(name, desc)
             } else {
-                Ok(TypeFnParam::Name(name))
-            }
+                TypeFnParam::Name(name, None)
+            };
+            let default = if p.then(TokenKind::Assign)? {
+                let saved = p.config.default_nonnilable;
+                p.config.default_nonnilable = true;
+                let ty = p.parse_type_annotation();
+                p.config.default_nonnilable = saved;
+                Some(ty?)
+            } else {
+                None
+            };
+            Ok(param.with_default(default))
         };
         let mut res: Vec<TypeFnParam> = vec![];
         if self.then(TokenKind::Dots)? {
@@ -3958,7 +3977,16 @@ impl Parser<Token> {
             return Ok(vec![self.type_rest_param()?].into_boxed_slice());
         }
         loop {
-            res.push(parse_param(self)?);
+            let param = parse_param(self)?;
+            if res.iter().any(|p| p.default().is_some()) && param.default().is_none() {
+                let span = param.name().map(|n| n.1).unwrap_or(self.current_span);
+                return Err(DukaSpannedError::new(
+                    DukaParserError::RequiredAfterDefault.into(),
+                    span,
+                    self.source_info.clone(),
+                ));
+            }
+            res.push(param);
             if !self.then(TokenKind::Comma)? {
                 break;
             }

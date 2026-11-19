@@ -3964,7 +3964,7 @@ fn type_fn_signature(
             | TypeDesc::AnyType(_) => false,
             TypeDesc::FnLit(fparams, _) => fparams
                 .iter()
-                .any(|p| matches!(p, TypeFnParam::Typed(_, t) if has_splice(t))),
+                .any(|p| matches!(p, TypeFnParam::Typed(_, t, _) if has_splice(t))),
             TypeDesc::ShapeType(_, args, _) => args.iter().any(has_splice),
             TypeDesc::ConstLit(bound, _) => bound.as_deref().is_some_and(has_splice),
         }
@@ -3972,9 +3972,9 @@ fn type_fn_signature(
     fn params(list: &[TypeFnParam], names: &[Box<str>]) -> String {
         list.iter()
             .map(|p| match p {
-                TypeFnParam::Typed((n, _), ty) => format!("{n}: {}", show(ty, names)),
-                TypeFnParam::Name((n, _)) => n.to_string(),
-                TypeFnParam::Kinded((n, _), k) => format!("{n}: {k}"),
+                TypeFnParam::Typed((n, _), ty, _) => format!("{n}: {}", show(ty, names)),
+                TypeFnParam::Name((n, _), _) => n.to_string(),
+                TypeFnParam::Kinded((n, _), k, _) => format!("{n}: {k}"),
                 TypeFnParam::Var(_, Some((n, _))) => format!("...{n}"),
                 TypeFnParam::Var(_, None) => "...".to_owned(),
             })
@@ -4017,9 +4017,9 @@ fn type_fn_signature(
                 .params
                 .iter()
                 .filter_map(|p| match p {
-                    TypeFnParam::Name((n, _))
-                    | TypeFnParam::Kinded((n, _), _)
-                    | TypeFnParam::Typed((n, _), _)
+                    TypeFnParam::Name((n, _), _)
+                    | TypeFnParam::Kinded((n, _), _, _)
+                    | TypeFnParam::Typed((n, _), _, _)
                     | TypeFnParam::Var(_, Some((n, _))) => {
                         Some(n.as_str().to_owned().into_boxed_str())
                     }

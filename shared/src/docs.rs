@@ -259,6 +259,7 @@ impl MetaInfo {
                     })
                     .collect();
                 Type::Function(Some(FunctionType {
+                    required_params: (fixed != usize::MAX).then_some(fixed),
                     var_arg: var_arg || open,
                     var_arg_bind,
                     return_var_arg: if returns.var_arg || return_var_arg_bind.is_some() {
@@ -597,6 +598,7 @@ impl DocType {
                 let (returns, return_var_arg, expands) = split(returns);
                 Type::Function(Some(FunctionType {
                     params: params.into(),
+                    required_params: None,
                     var_arg,
                     var_arg_bind: binds.map(|s| s.into_boxed_str()),
                     returns: returns.into(),

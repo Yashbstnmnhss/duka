@@ -3,9 +3,12 @@
     "name": "Duka",
     "fileTypes": ["duka"],
     "patterns": [
+        { "include": "#macro" },
         { "include": "#comment" },
         { "include": "#string" },
         { "include": "#number" },
+        { "include": "#storage" },
+        { "include": "#others" },
         { "include": "#keyword" },
         { "include": "#special-variable" },
         { "include": "#operator" },
@@ -16,9 +19,21 @@
         { "include": "#types" }
     ],
     "repository": {
+        "macro": {
+            "name": "meta.preprocessor.language.duka",
+            "match": "\\b^#(ifdef|ifndef|define|undef|else|end)\\b"
+        },
         "constant": {
             "name": "constant.language.duka",
-            "match": "\\b(true|false|nil|type|go|yield|spawn|userdata|const)\\b"
+            "match": "\\b(true|false|nil|userdata)\\b"
+        },
+        "storage": {
+            "name": "storage.modifier.duka",
+            "match": "\\b(type|const)\\b"
+        },
+        "others": {
+            "name": "keyword.other.duka",
+            "match": "\\b(go|yield|spawn)\\b"
         },
         "ident": {
             "match": "\\b\\p{L}[\\p{L}\\p{N}_]*\\b"
