@@ -440,10 +440,10 @@ impl Scheduler {
 
     #[cfg_attr(not(feature = "debug"), inline(always))]
     pub fn go(&mut self, heap: &mut Heap) -> Result<ValueCount, DukaTraceError> {
+        #[cfg(feature = "debug")]
         loop {
             match self.run(heap)? {
                 Outcome::Finished(f) => break Ok(f),
-                #[cfg(feature = "debug")]
                 Outcome::Paused => {
                     if let Some(d) = &self.debugger {
                         let mut d = d.borrow_mut();
@@ -455,6 +455,10 @@ impl Scheduler {
                     }
                 }
             }
+        }
+        #[cfg(not(feature = "debug"))]
+        match self.run(heap)? {
+            Outcome::Finished(f) => break Ok(f),
         }
     }
 

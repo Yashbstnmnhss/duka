@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_int, c_void};
